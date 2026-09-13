@@ -69,12 +69,11 @@ model Message {
 }
 
 model Receipt {
-  id        String   @id @default(uuid())
   messageId String
   userId    String 
   readTime  DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id])
   message   Message  @relation(fields: [messageId], references: [id])
 
-  @@unique([userId, messageId])
+  @@id([messageId, userId])
 }
