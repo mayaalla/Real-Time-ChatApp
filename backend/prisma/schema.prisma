@@ -9,12 +9,12 @@ generator client {
 model User {
   id            String        @id @default(uuid())
   email         String        @unique
-  name          String        @unique
+  name          String        
   username      String        @unique
-  password      String
+  passwordHash      String
   avatarAddress String?
-  lastSeen      DateTime
-  creationTime  DateTime
+  lastSeen      DateTime? // Must be DateTime?, whene i user create accont is never been seen.
+  creationTime  DateTime @default(now())
   participants  Participant[]
   messages      Message[]
   receipt       Receipt[]
@@ -22,9 +22,9 @@ model User {
 
 model Conversation {
   id           String        @id @default(uuid())
-  isGroup      Boolean
+  isGroup      Boolean @default(false)
   name         String? // only set when isGroup = true
-  creationTime DateTime
+  creationTime DateTime @default(now())
   participants Participant[]
   messages     Message[]
 }
@@ -38,13 +38,14 @@ enum Role {
 //This table is what makes group chat possible and what you check before letting anyone into a room.
 model Participant {
   id             String       @id @default(uuid())
-  role           Role
-  joinTime       DateTime
+  role           Role @default(MEMBER)
+  joinTime       DateTime @default(now())
   // each user perticipate to more then one conversation
   user           User         @relation(fields: [userId], references: [id])
   userId         String
   conversation   Conversation @relation(fields: [conversationId], references: [id])
   conversationId String
+  @@unique([userId, conversationId])
 }
 
 enum Status {
@@ -59,8 +60,8 @@ model Message {
   conversationId    String
   textBody          String?
   attachmentAddress String?
-  status            Status
-  creationTime      DateTime
+  status            Status @default(SENT)
+  creationTime      DateTime @default(now())
   edited            String?
   user              User         @relation(fields: [userId], references: [id])
   conversation      Conversation @relation(fields: [conversationId], references: [id])
@@ -70,8 +71,8 @@ model Message {
 model Receipt {
   id        String   @id @default(uuid())
   messageId String
-  userId    String
-  readTime  DateTime
+  userId    String 
+  readTime  DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id])
   message   Message  @relation(fields: [messageId], references: [id])
 
