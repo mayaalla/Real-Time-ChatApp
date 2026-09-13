@@ -14,7 +14,7 @@ model User {
   passwordHash      String
   avatarAddress String?
   lastSeen      DateTime? // Must be DateTime?, whene i user create accont is never been seen.
-  creationTime  DateTime @default(now())
+  createdAt  DateTime @default(now())
   participants  Participant[]
   messages      Message[]
   receipt       Receipt[]
@@ -24,7 +24,7 @@ model Conversation {
   id           String        @id @default(uuid())
   isGroup      Boolean @default(false)
   name         String? // only set when isGroup = true
-  creationTime DateTime @default(now())
+  createdAt DateTime @default(now())
   participants Participant[]
   messages     Message[]
 }
@@ -61,7 +61,7 @@ model Message {
   textBody          String?
   attachmentAddress String?
   status            Status @default(SENT)
-  creationTime      DateTime @default(now())
+  createdAt      DateTime @default(now())
   edited            String?
   user              User         @relation(fields: [userId], references: [id])
   conversation      Conversation @relation(fields: [conversationId], references: [id])
