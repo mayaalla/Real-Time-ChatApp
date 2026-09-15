@@ -11,6 +11,17 @@ const schema = z.object({
 
   // Direct Neon string (no "-pooler"). Used only by migrations.
   DIRECT_URL: z.string().min(1),
+
+  // ── JWT ────────────────────────────────────────────────────────────────────
+  // Two separate secrets: a leaked refresh secret cannot forge an access token.
+  // Minimum 32 characters so HMAC-SHA-256 has a full-block key.
+  JWT_ACCESS_SECRET: z.string().min(32),
+  JWT_REFRESH_SECRET: z.string().min(32),
+
+  // Passed directly to jsonwebtoken's `expiresIn` option.
+  // Examples: "15m", "1h", "7d"
+  JWT_ACCESS_EXPIRES_IN: z.string().min(1).default("15m"),
+  JWT_REFRESH_EXPIRES_IN: z.string().min(1).default("7d"),
 });
 
 const parsed = schema.safeParse(process.env);

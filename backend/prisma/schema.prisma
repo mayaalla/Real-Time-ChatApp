@@ -10,17 +10,18 @@ generator client {
 }
 
 model User {
-  id            String        @id @default(uuid())
-  email         String        @unique
+  id            String         @id @default(uuid())
+  email         String         @unique
   name          String
-  username      String        @unique
+  username      String         @unique
   passwordHash  String
   avatarAddress String?
   lastSeen      DateTime? // Must be DateTime?, whene i user create accont is never been seen.
-  createdAt     DateTime      @default(now())
+  createdAt     DateTime       @default(now())
   participants  Participant[]
   messages      Message[]
   receipt       Receipt[]
+  token         RefreshToken[]
 }
 
 model Conversation {
@@ -84,4 +85,20 @@ model Receipt {
   message   Message  @relation(fields: [messageId], references: [id])
 
   @@id([messageId, userId])
+}
+
+// Strategy: Postgres table — filter by expiry at query time.
+// Expired rows are NOT auto-deleted; instead every query includes
+//   WHERE expiry > NOW() AND revoked = FALSE
+// A periodic job (or a simple DELETE on login) can sweep stale rows.
+model RefreshToken {
+  token     String   @id // opaque random token (e.g. 32-byte hex)
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  expiry    DateTime // absolute UTC timestamp the token expires
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([ownerId]) // fast "all tokens for user X" (logout-all / rotation)
+  @@index([expiry]) // fast sweep of expired rows
 }
