@@ -99,10 +99,30 @@ export function createApp(): Application {
   //  before it reaches your actual route handlers.
   //
   // ADHD Visual:
-  //   Request →  [CORS] → [Helmet] → [JSON Parser] → [Cookie Parser]
-  //           → [Logger] → [Your Route] → [Response]
+  //   Request → [Logger] → [CORS] → [Helmet] → [JSON Parser] → [Cookie Parser]
+  //           → [Your Route] → [Response]
   // Each middleware does its job and passes to the next one. ➡️
   // ───────────────────────────────────────────────────────────
+
+
+  // ✅ LOGGER MIDDLEWARE (pino-http) — MUST BE FIRST
+  // Logs every HTTP request with useful metadata.
+  // Placed HERE (before all other middleware) so every request is captured,
+  // including those that fail CORS or are rejected early.
+  //   - `redact`: Hides auth headers and cookies from logs (never log secrets). 🔒
+  //   - `transport`: Pretty-print in dev; raw JSON in production (for log aggregators).
+  app.use(
+    pinoHttp({
+      // 🚫 Never log authorization headers or cookies — these are sensitive secrets!
+      redact: ["req.headers.authorization", "req.headers.cookie"],
+
+      // 🎨 Pretty print in dev for readability; raw JSON in production for performance
+      transport:
+        process.env.NODE_ENV === "production"
+          ? undefined               // In production: fast JSON output (for tools like Datadog, Loki)
+          : { target: "pino-pretty" }, // In development: colorful, formatted logs in terminal
+    })
+  );
 
 
   // ✅ CORS MIDDLEWARE
@@ -236,34 +256,7 @@ export function createApp(): Application {
   });
 
 
-  // ─────────────────────────────────────────────────────────
-  // 📋 LOGGER MIDDLEWARE (pino-http)
-  // ─────────────────────────────────────────────────────────
-  // 🔧 WHY: Logs every HTTP request with useful metadata.
-  //    - `redact`: Hides sensitive fields (auth tokens, cookies) from logs
-  //      so credentials are never accidentally printed. 🔒
-  //    - `transport`: In development, uses "pino-pretty" for colorful,
-  //      human-readable logs. In production, uses raw JSON (faster, for log aggregators).
-  //
-  // ⚠️ NOTE: Currently placed AFTER the routes — this means the logger
-  //    won't actually log anything because requests are handled before reaching it.
-  //    TODO: Move this to be the FIRST middleware (before cors, helmet, etc.)
-  //          so every request gets logged from the start. 🧹
-  //
-  // ADHD Tip: Pino is great because it's blazing fast and low-overhead.
-  //    You get great logs without slowing down the server. ⚡
-  app.use(
-    pinoHttp({
-      // 🚫 Never log authorization headers or cookies — these are sensitive secrets!
-      redact: ["req.headers.authorization", "req.headers.cookie"],
 
-      // 🎨 Pretty print in dev for readability; raw JSON in production for performance
-      transport:
-        process.env.NODE_ENV === "production"
-          ? undefined               // In production: fast JSON output (for tools like Datadog, Loki)
-          : { target: "pino-pretty" }, // In development: colorful, formatted logs in terminal
-    })
-  );
 
 
   // ─────────────────────────────────────────────────────────
