@@ -221,7 +221,7 @@ export class GroupNameRequired extends Error {
  *
  * @param input - The validated request body ({ participantIds, isGroup, name? }).
  */
-export async function createConversation(input: CreateConversationBody): Promise<void> {
+export async function createConversation(input: CreateConversationBody): Promise<Conversation> {
 
     // ── STEP 1: Reject duplicate user IDs ────────────────────────────────────
     // We deduplicate the IDs with a Set. If the original array and the
@@ -275,34 +275,40 @@ export async function createConversation(input: CreateConversationBody): Promise
         throw new UserNotFoundError("", missingIds.join(", "));
     }
 
-    // ── STEP 5: Prevent duplicate private (DM) conversations ─────────────────
-    // This check only applies to 2-person (private) conversations.
-    // For groups we don't block duplicates — two groups can have the same members.
+    // ── STEP 5: Idempotency for private (DM) conversations ───────────────────
+    // This check only applies to private (non-group) conversations.
+    // For groups we don't block duplicates — two groups CAN have the same members.
     //
     // We look for an existing conversation where:
-    //   (a) EVERY requested user is already a participant, AND
-    //   (b) NO other users are participants (exact match, not a subset).
-    if (input.participantIds.length === 2) {
+    //   (a) isGroup is false (so we never accidentally match a group chat)
+    //   (b) EVERY requested user is already a participant, AND
+    //   (c) NO other users are participants (exact 2-person match, not a subset).
+    //
+    // If a match is found we RETURN IT immediately instead of creating a
+    // duplicate — this is the idempotency rule for one-to-one chats.
+    if (!input.isGroup) {
         const ids = [...new Set(input.participantIds)]; // deduplicated (safety)
 
-        const conversation = await prisma.conversation.findFirst({
+        const existing = await prisma.conversation.findFirst({
             where: {
+                isGroup: false, // (a) never confuse a group with a DM
                 AND: ids.map((userId) => ({
-                    // Condition (a): this userId IS in the conversation
+                    // Condition (b): this userId IS in the conversation
                     participants: { some: { userId } },
                 })),
-                // Condition (b): every participant's userId is in our list
-                // (no extra participants allowed)
+                // Condition (c): every participant's userId is in our list
+                // (no extra participants allowed — exact 2-person match)
                 participants: {
                     every: { userId: { in: ids } },
                 },
             },
-            include: { participants: true }, // we include participants for debugging if needed
+            include: { participants: true },
         });
 
-        // If a matching conversation already exists, reject the request.
-        if (conversation) {
-            throw new DuplicatePrivateConvo("A private conversation between these users already exists");
+        // A private conversation between exactly these two users already
+        // exists — return it instead of creating a duplicate.
+        if (existing) {
+            return existing;
         }
     }
 
@@ -315,15 +321,24 @@ export async function createConversation(input: CreateConversationBody): Promise
     //   Without a transaction we'd have an "orphan" conversation with no users.
     //   With a transaction, Prisma automatically rolls back the conversation
     //   creation too, leaving the database clean.
-    await prisma.$transaction(async (tx) => {
+    const newConvo = await prisma.$transaction(async (tx) => {
         // 6a. Insert the conversation row (sets isGroup, name).
         const convo = await addConversation(tx, input.isGroup, input.name);
 
         // 6b. Insert all participant rows (sets userId, conversationId, role).
         await addParticipant(tx, convo, input);
+
+        return convo;
     });
 
     // If we reach here with no errors thrown, the conversation was created
-    // successfully! The function returns void — the route handler decides what
-    // HTTP 201 response to send back to the client.
+    // successfully! Return the new conversation so the route handler can
+    // send it back to the client (HTTP 201).
+    return newConvo;
+}
+
+
+
+export async function deleteConversation(){
+    
 }
