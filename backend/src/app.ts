@@ -61,6 +61,7 @@ import { pinoHttp } from "pino-http";
 //    We just write JS, and Prisma converts it into SQL for us. 🗄️
 import { prisma } from "./db/prisma.js";
 import authRouter from "./modules/auth/auth.routes.js";
+import usersRouter from "./modules/users/users.routes.js";
 
 
 // ─────────────────────────────────────────────────────────────
@@ -166,6 +167,15 @@ export function createApp(): Application {
   // ─────────────────────────────────────────────────────────
   // POST /api/auth/register — create account, return tokens
   app.use("/api/auth", authRouter);
+
+  // ─────────────────────────────────────────────────────────
+  // 👤 USER ROUTES — /api/users
+  // ─────────────────────────────────────────────────────────
+  // GET   /api/users/me       → who am I?        (Step 8.1)
+  // GET   /api/users?search=  → search users     (Step 8.2)
+  // PATCH /api/users/me       → edit my profile  (Step 8.3)
+  // All routes protected by the authenticate middleware (applied in the router).
+  app.use("/api/users", usersRouter);
 
 
   // ─────────────────────────────────────────────────────────

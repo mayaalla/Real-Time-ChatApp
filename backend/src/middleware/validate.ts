@@ -112,13 +112,19 @@ export function validate<
     }
 
     // ---- query -------------------------------------------------------------
+    // NOTE: req.query is a read-only getter on the Express Request prototype.
+    // Direct assignment throws "Cannot set property query … which has only a getter".
+    // We shadow it on the instance via Object.defineProperty so downstream
+    // handlers see the Zod-parsed (coerced, stripped) value when they read req.query.
     if (schema.query !== undefined) {
       const r = parseSection(schema.query, req.query, "query");
       if (r.ok) {
-        (req as Request & { query: unknown }).query = r.data as Record<
-          string,
-          string
-        >;
+        Object.defineProperty(req, "query", {
+          value: r.data,
+          writable: true,
+          configurable: true,
+          enumerable: true,
+        });
       } else {
         allErrors.push(...r.errors);
       }
