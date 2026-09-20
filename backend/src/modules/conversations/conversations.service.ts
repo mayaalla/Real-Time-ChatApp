@@ -17,7 +17,7 @@ import { boolean } from "zod";
 
 // The shape (type) of the data we expect when someone wants to create a
 // conversation. For example: { participantIds, isGroup, name }.
-import type { CreateConversationBody } from "./conversations.schemas.js";
+import { ConversationSummarySchema, type ConversationDetail, type ConversationSummary, type CreateConversationBody } from "./conversations.schemas.js";
 
 // The Prisma-generated TypeScript type for a "Conversation" row in the database.
 // Using this type keeps our code safe — TypeScript will warn us if we use the
@@ -339,6 +339,209 @@ export async function createConversation(input: CreateConversationBody): Promise
 
 
 
-export async function deleteConversation(){
-    
+
+export async function getConversation(id:string, currentUserId:string):Promise<ConversationDetail>{
+
+    // find the convo from the db
+    const convo = await  prisma.conversation.findUnique({
+        where:{
+            id: id
+        },
+        select:{
+            id:true,
+            isGroup:true,
+            participants:{
+                select:{
+                    id:true, role:true, joinTime:true,
+                    user:{
+                        select:{
+                            id:true,
+                            username:true,
+                            avatarAddress:true,
+                            lastSeen:true,
+                        }
+                    }
+                }
+            },
+            messages: {
+            orderBy: { createdAt: "desc" }, // newest first
+            take: 1,                        // only the latest one
+            },
+            name:true,
+            createdAt:true
+
+        }
+    })
+
+    if (!convo) throw new Error("Conversation not found");
+   
+
+     
+
+    // participants: {
+    //     id: string;
+    //     role: "OWNER" | "ADMIN" | "MEMBER";
+    //     joinTime: string;
+    //     user: {
+    //         id: string;
+    //         username: string;
+    //         avatarAddress: string | null;
+    //         lastSeen: Date | null;
+    //     };
+    // }[];
+
+
+ const participants = convo.participants;
+
+
+const unreadCount = await prisma.message.count({
+  where: {
+    conversationId: id,
+    senderId: { not: currentUserId },      // exclude my own messages
+    deletedAt: null,                       // exclude soft-deleted
+    receipt: { none: { userId: currentUserId } }, // I haven't read them
+  },
+});
+
+// ── Shape coercion to match ConversationSummary ──────────────────────────────
+// joinTime is stored as Date in Prisma — schema expects ISO 8601 string.
+const shapedParticipants = participants.map((p) => ({
+    ...p,
+    joinTime: p.joinTime.toISOString(),
+}));
+
+// messages is returned as an array (take: 1). Schema expects a single object
+// or null, never an array.
+const lastMessage = convo.messages[0]
+    ? {
+          id:        convo.messages[0].id,
+          textBody:  convo.messages[0].textBody,
+          senderId:  convo.messages[0].senderId,
+          createdAt: convo.messages[0].createdAt.toISOString(),
+      }
+    : null;
+
+// displayName: for groups use the stored name; for DMs use the other user's username.
+const displayName = convo.isGroup
+    ? (convo.name ?? "")
+    : (participants.find((p) => p.user.id !== currentUserId)?.user.username ?? "");
+
+// displayPicture: group chats have no avatar in v1; DMs show the other user's avatar.
+const displayPicture = convo.isGroup
+    ? null
+    : (participants.find((p) => p.user.id !== currentUserId)?.user.avatarAddress ?? null);
+
+return {
+    id:             convo.id,
+    isGroup:        convo.isGroup,
+    participants:   shapedParticipants,
+    lastMessage:    lastMessage,
+    createdAt:      convo.createdAt.toISOString(),   // toISOString() → valid datetime string
+    unreadCount:    unreadCount,
+    displayName:    displayName,
+    displayPicture: displayPicture,
+};
+
+}
+
+
+export async function getAllConversations(currentUserId: string): Promise<ConversationSummary[]> {
+
+    // ── 1. Fetch all conversations the current user belongs to ────────────────
+    // We include the last message (take:1 ordered desc) and all participants
+    // (with their user info) so we can compute displayName/displayPicture
+    // client-side without extra queries.
+    const conversations = await prisma.conversation.findMany({
+        where: {
+            participants: { some: { userId: currentUserId } }, // only my convos
+        },
+        select: {
+            id:      true,
+            isGroup: true,
+            name:    true,
+            createdAt: true,
+            participants: {
+                select: {
+                    id:       true,
+                    role:     true,
+                    joinTime: true,
+                    user: {
+                        select: {
+                            id:            true,
+                            username:      true,
+                            avatarAddress: true,
+                            lastSeen:      true,
+                        },
+                    },
+                },
+            },
+            messages: {
+                orderBy: { createdAt: "desc" }, // newest first
+                take: 1,                        // only the latest message
+            },
+        },
+        orderBy: { createdAt: "desc" }, // most recently created first
+    });
+
+    // ── 2. Bulk-fetch unread counts (one query, not N) ────────────────────────
+    // Group by conversationId to get unread counts for ALL conversations at once.
+    // This avoids running a separate COUNT query inside the map() loop below.
+    const unreadRows = await prisma.message.groupBy({
+        by: ["conversationId"],
+        where: {
+            conversationId: { in: conversations.map((c) => c.id) },
+            senderId:       { not: currentUserId },   // not my own messages
+            deletedAt:      null,                     // not soft-deleted
+            receipt:        { none: { userId: currentUserId } }, // I haven't read them
+        },
+        _count: { id: true },
+    });
+
+    // Turn the array into a Map<conversationId, count> for O(1) lookup.
+    const unreadByConvoId = new Map(
+        unreadRows.map((row) => [row.conversationId, row._count.id])
+    );
+
+    // ── 3. Map raw Prisma rows → ConversationSummary ──────────────────────────
+    const summaries: ConversationSummary[] = conversations.map((convo) => {
+
+        // joinTime is a Date in Prisma — schema expects ISO 8601 string.
+        const shapedParticipants = convo.participants.map((p) => ({
+            ...p,
+            joinTime: p.joinTime.toISOString(),
+        }));
+
+        // messages is an array (take: 1) — schema expects object | null.
+        const lastMessage = convo.messages[0]
+            ? {
+                  id:        convo.messages[0].id,
+                  textBody:  convo.messages[0].textBody,
+                  senderId:  convo.messages[0].senderId,
+                  createdAt: convo.messages[0].createdAt.toISOString(),
+              }
+            : null;
+
+        // displayName: group name for groups, other user's username for DMs.
+        const displayName = convo.isGroup
+            ? (convo.name ?? "")
+            : (convo.participants.find((p) => p.user.id !== currentUserId)?.user.username ?? "");
+
+        // displayPicture: null for groups, other user's avatar for DMs.
+        const displayPicture = convo.isGroup
+            ? null
+            : (convo.participants.find((p) => p.user.id !== currentUserId)?.user.avatarAddress ?? null);
+
+        return {
+            id:             convo.id,
+            isGroup:        convo.isGroup,
+            displayName:    displayName,
+            displayPicture: displayPicture,
+            participants:   shapedParticipants,
+            lastMessage:    lastMessage,
+            unreadCount:    unreadByConvoId.get(convo.id) ?? 0,
+            createdAt:      convo.createdAt.toISOString(),
+        };
+    });
+
+    return summaries;
 }
