@@ -2,22 +2,14 @@
 // IMPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// BlockList is a Node.js built-in that can block IP addresses.
-// We import it here but don't use it yet — it may be used later for security.
-import { BlockList } from "node:net";
-
 // prisma is our database client. Every time we want to read or write to the
 // database, we use this object. Think of it as the "bridge" between our code
 // and the database.
 import { prisma } from "../../db/prisma.js";
 
-// `boolean` is a Zod validator type. We import it here but the real validation
-// happens in the schema file. This is here in case we need it for runtime checks.
-import { any, boolean } from "zod";
-
 // The shape (type) of the data we expect when someone wants to create a
 // conversation. For example: { participantIds, isGroup, name }.
-import { ConversationSummarySchema, type ConversationDetail, type ConversationSummary, type CreateConversationBody, type Participant } from "./conversations.schemas.js";
+import { type ConversationDetail, type ConversationSummary, type CreateConversationBody, type Participant } from "./conversations.schemas.js";
 
 // The Prisma-generated TypeScript type for a "Conversation" row in the database.
 // Using this type keeps our code safe — TypeScript will warn us if we use the
@@ -100,18 +92,23 @@ async function addConversation(tx: Tx, isGroup: boolean, name: string | undefine
  * @param convo  - The conversation we just created (we need its `id`).
  * @param input  - The original request body (contains participantIds & isGroup).
  */
-async function addParticipant(tx: Tx, convo: Conversation, input: CreateConversationBody): Promise<void> {
+async function addParticipants(tx: Tx, convo: Conversation, input: CreateConversationBody, creatorId: string): Promise<void> {
     const { participantIds, isGroup } = input;
 
     // Build one participant record per user ID.
-    // We decide the role here so we only loop through the array once.
-    const participants = participantIds.map((userId, index) => ({
-        userId,
-        conversationId: convo.id,  // link participant to the conversation we just created
-        // Group: creator (index 0) is ADMIN, everyone else is MEMBER.
-        // Private DM: all participants are ADMIN.
-        role: (!isGroup || index === 0) ? ("ADMIN" as const) : ("MEMBER" as const),
-    }));
+    // Creator always gets OWNER role — this is required by the spec.
+    // All other participants get MEMBER role by default.
+    const participants = [
+        // Creator first — always OWNER, regardless of DM or group.
+        { userId: creatorId, conversationId: convo.id, role: "OWNER" as const },
+
+        // Remaining participants — MEMBER role for everyone else.
+        ...participantIds.map((userId) => ({
+            userId,
+            conversationId: convo.id,
+            role: "MEMBER" as const,
+        })),
+    ];
 
     // Insert ALL participant rows in a single database query.
     // This is faster than running one INSERT per participant.
@@ -132,6 +129,9 @@ async function addParticipant(tx: Tx, convo: Conversation, input: CreateConversa
  * Thrown when one or more user IDs in the request do not exist in the database.
  * HTTP 404 → "Not Found"
  */
+
+
+
 export class UserNotFoundError extends Error {
     readonly statusCode = 404;
 
@@ -144,7 +144,7 @@ export class UserNotFoundError extends Error {
 }
 
 export class ConversationFoundError extends Error {
-    readonly statuscode = 404;
+    readonly statusCode = 404;
 
     constructor(message = "Conversation not found", convoId: string) {
         // Include the missing ID(s) in the message so the caller knows exactly
@@ -154,6 +154,16 @@ export class ConversationFoundError extends Error {
     }
 }
 
+export class AddParticipantError extends Error {
+    readonly statusCode = 400;
+
+    constructor(message: string) {
+        // Include the missing ID(s) in the message so the caller knows exactly
+        // which user(s) caused the problem.
+        super(message);
+        this.name = "AddParticipantError";
+    }
+}
 /**
  * Thrown when the client tries to create a private DM that already exists
  * between the same two users.
@@ -220,6 +230,41 @@ export class RenameError extends Error {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SHARED GUARD — isParticipant
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Checks whether a user is a member of a given conversation.
+ *
+ * This is the SINGLE SOURCE OF TRUTH for conversation access control.
+ * It must be called before ANY operation that reads or writes to a conversation.
+ *
+ * Used by:
+ *   - REST handlers (getConversation, addParticipant, deleteParticipant, etc.)
+ *   - Socket.IO handlers (message:send, message:read, typing, etc.)
+ *
+ * NEVER inline this check. NEVER trust a user-supplied conversationId without
+ * running this guard first.
+ *
+ * @param userId         - The authenticated user's ID (from req.user.id or socket.data.userId).
+ * @param conversationId - The conversation to check membership for.
+ * @returns              - true if the user is a participant; false otherwise.
+ */
+export async function isParticipant(userId: string, conversationId: string): Promise<boolean> {
+    const participant = await prisma.participant.findUnique({
+        where: {
+            // @@unique([userId, conversationId]) — the composite unique key on the table.
+            // Prisma exposes this as `userId_conversationId` for findUnique.
+            userId_conversationId: { userId, conversationId },
+        },
+        select: { id: true }, // we only need to know it exists — select minimal data
+    });
+
+    return participant !== null;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN SERVICE FUNCTION
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -234,9 +279,11 @@ export class RenameError extends Error {
  *   5. For private DMs: check that this exact conversation doesn't already exist.
  *   6. Write the conversation + participants to the database (in one transaction).
  *
- * @param input - The validated request body ({ participantIds, isGroup, name? }).
+ * @param input      - The validated request body ({ participantIds, isGroup, name? }).
+ * @param creatorId  - The ID of the authenticated user creating the conversation.
+ *                     They are always added as OWNER and are NOT listed in participantIds.
  */
-export async function createConversation(input: CreateConversationBody): Promise<Conversation> {
+export async function createConversation(input: CreateConversationBody, creatorId: string): Promise<Conversation> {
 
     // ── STEP 1: Reject duplicate user IDs ────────────────────────────────────
     // We deduplicate the IDs with a Set. If the original array and the
@@ -250,18 +297,19 @@ export async function createConversation(input: CreateConversationBody): Promise
     }
 
     // ── STEP 2: Validate participant count ────────────────────────────────────
+    // participantIds contains OTHER users only — the creator is added separately.
     // Business rules:
-    //   • Private DM  → exactly 2 people (you + the other person).
-    //   • Group chat  → at least 3 people (a "group" of 2 is just a DM).
-    if (!input.isGroup && input.participantIds.length !== 2) {
-        throw new InvalidParticipantCount("A direct message requires exactly 2 participants");
+    //   • Private DM  → exactly 1 other person (creator + 1 = 2 total).
+    //   • Group chat  → at least 2 others (creator + 2 = 3 total minimum).
+    if (!input.isGroup && input.participantIds.length !== 1) {
+        throw new InvalidParticipantCount("A direct message requires exactly 1 other participant");
     }
-    if (input.isGroup && input.participantIds.length < 3) {
-        throw new InvalidParticipantCount("A group conversation requires at least 3 participants");
+    if (input.isGroup && input.participantIds.length < 2) {
+        throw new InvalidParticipantCount("A group conversation requires at least 2 other participants");
     }
 
     // ── STEP 3: Group conversations must have a name ──────────────────────────
-    // `.trim()` removes leading/trailing spaces so " " (just spaces) is also
+    // `.trim()` removes leading/trailing spaces so "  " (just spaces) is also
     // treated as empty — a name like "   " would be confusing in the UI.
     if (input.isGroup && !input.name?.trim()) {
         throw new GroupNameRequired("A group conversation must have a name");
@@ -296,25 +344,26 @@ export async function createConversation(input: CreateConversationBody): Promise
     //
     // We look for an existing conversation where:
     //   (a) isGroup is false (so we never accidentally match a group chat)
-    //   (b) EVERY requested user is already a participant, AND
+    //   (b) EVERY requested user + creator is already a participant, AND
     //   (c) NO other users are participants (exact 2-person match, not a subset).
     //
     // If a match is found we RETURN IT immediately instead of creating a
     // duplicate — this is the idempotency rule for one-to-one chats.
     if (!input.isGroup) {
-        const ids = [...new Set(input.participantIds)]; // deduplicated (safety)
+        // Both the creator and the other participant must be in the conversation.
+        const allIds = [...new Set([creatorId, ...input.participantIds])];
 
         const existing = await prisma.conversation.findFirst({
             where: {
                 isGroup: false, // (a) never confuse a group with a DM
-                AND: ids.map((userId) => ({
+                AND: allIds.map((userId) => ({
                     // Condition (b): this userId IS in the conversation
                     participants: { some: { userId } },
                 })),
                 // Condition (c): every participant's userId is in our list
                 // (no extra participants allowed — exact 2-person match)
                 participants: {
-                    every: { userId: { in: ids } },
+                    every: { userId: { in: allIds } },
                 },
             },
             include: { participants: true },
@@ -332,7 +381,7 @@ export async function createConversation(input: CreateConversationBody): Promise
     // participant rows) succeed or fail together.
     //
     // Why a transaction?
-    //   Imagine the conversation is created but then addParticipant crashes.
+    //   Imagine the conversation is created but then addParticipants crashes.
     //   Without a transaction we'd have an "orphan" conversation with no users.
     //   With a transaction, Prisma automatically rolls back the conversation
     //   creation too, leaving the database clean.
@@ -340,8 +389,8 @@ export async function createConversation(input: CreateConversationBody): Promise
         // 6a. Insert the conversation row (sets isGroup, name).
         const convo = await addConversation(tx, input.isGroup, input.name);
 
-        // 6b. Insert all participant rows (sets userId, conversationId, role).
-        await addParticipant(tx, convo, input);
+        // 6b. Insert all participant rows (creator as OWNER + others as MEMBER).
+        await addParticipants(tx, convo, input, creatorId);
 
         return convo;
     });
@@ -354,6 +403,14 @@ export async function createConversation(input: CreateConversationBody): Promise
 
 
 export async function getConversation(id: string, currentUserId: string): Promise<ConversationDetail> {
+
+    // ── STEP 1: Membership check (SECURITY — must be first) ───────────────────
+    // Never let an authenticated user read a conversation they don't belong to.
+    // We return 403 (or 404 to hide existence) instead of leaking conversation data.
+    const isMember = await isParticipant(currentUserId, id);
+    if (!isMember) {
+        throw new ConversationFoundError("Conversation not found", id);
+    }
 
     // find the convo from the db
     const convo = await prisma.conversation.findUnique({
@@ -571,7 +628,9 @@ export async function getParticipents(id: string): Promise<Participant[]> {
         }
     });
 
-    if (!conv) {
+    // `findMany` always returns an array — it is NEVER null.
+    // An empty array means the conversation doesn't exist (or has no participants).
+    if (conv.length === 0) {
         throw new ConversationFoundError("", id);
     }
 
@@ -635,9 +694,9 @@ export async function renameGroup(id: string, name: string): Promise<Rename> {
         throw new ConversationFoundError("", id);
     }
 
-    // verify it's not group
+    // verify it's not a DM — only group conversations can be renamed
     if (!conv.isGroup) {
-        throw new RenameError("you cannot rename a group");
+        throw new RenameError("you cannot rename a direct message");
     }
 
     // update the name in the database
@@ -651,4 +710,71 @@ export async function renameGroup(id: string, name: string): Promise<Rename> {
     };
 
     return output;
+}
+
+
+
+export async function addParticipant(idConvo: string, idUser: string): Promise<Participant> {
+
+    // verify that the user exists
+    const user = await prisma.user.findUnique({
+        where: {
+            id: idUser
+        }
+    })
+    if (!user) {
+        throw new UserNotFoundError("", idUser)
+    }
+
+    // verify that the conversation exists
+    const convo = await prisma.conversation.findUnique({
+        where: {
+            id: idConvo
+        },
+        select: {
+            id: true, participants: true, isGroup: true
+        }
+    })
+
+    if (!convo) {
+        throw new ConversationFoundError("", idConvo)
+    }
+
+    // Only group conversations allow adding participants.
+    // DMs are always exactly 2 people.
+    if (!convo.isGroup) {
+        throw new AddParticipantError("you cannot add other users to a private chat")
+    }
+
+    // Guard against adding a user who is already in the conversation.
+    // Without this check, Prisma would throw a raw DB unique-constraint error
+    // instead of a clean, readable error message for the client.
+    const alreadyMember = await isParticipant(idUser, idConvo);
+    if (alreadyMember) {
+        throw new AddParticipantError("User is already a participant in this conversation");
+    }
+
+    // ADD THE PARTICIPANT TO THE CONVERSATION
+    const pert = await prisma.participant.create({
+        data: {
+            role: "MEMBER",
+            userId: idUser,
+            conversationId: idConvo
+        }
+    })
+
+    const output = {
+        id: pert.id, role: pert.role,
+        // toISOString() produces "2026-09-21T16:00:00.000Z" — required by the
+        // z.string().datetime() schema. toDateString() was wrong ("Mon Sep 21 2026").
+        joinTime: pert.joinTime.toISOString(),
+        user: {
+            id: idUser, username: user.username,
+            avatarAddress: user.avatarAddress,
+            lastSeen: user.lastSeen
+        }
+    }
+
+    return output
+
 }
