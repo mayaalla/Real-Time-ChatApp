@@ -13,21 +13,16 @@ import { prisma } from "../../db/prisma.js";
 
 // `boolean` is a Zod validator type. We import it here but the real validation
 // happens in the schema file. This is here in case we need it for runtime checks.
-import { boolean } from "zod";
+import { any, boolean } from "zod";
 
 // The shape (type) of the data we expect when someone wants to create a
 // conversation. For example: { participantIds, isGroup, name }.
-import { ConversationSummarySchema, type ConversationDetail, type ConversationSummary, type CreateConversationBody } from "./conversations.schemas.js";
+import { ConversationSummarySchema, type ConversationDetail, type ConversationSummary, type CreateConversationBody, type Participant } from "./conversations.schemas.js";
 
 // The Prisma-generated TypeScript type for a "Conversation" row in the database.
 // Using this type keeps our code safe — TypeScript will warn us if we use the
 // wrong fields.
 import type { Conversation } from "../../generated/prisma/client.js";
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTILITY HELPER
-// ─────────────────────────────────────────────────────────────────────────────
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,14 +133,25 @@ async function addParticipant(tx: Tx, convo: Conversation, input: CreateConversa
  * HTTP 404 → "Not Found"
  */
 export class UserNotFoundError extends Error {
-  readonly statusCode = 404;
+    readonly statusCode = 404;
 
-  constructor(message = "User not found", userId: string) {
-    // Include the missing ID(s) in the message so the caller knows exactly
-    // which user(s) caused the problem.
-    super(message + "with id " + userId);
-    this.name = "UserNotFoundError";
-  }
+    constructor(message = "User not found", userId: string) {
+        // Include the missing ID(s) in the message so the caller knows exactly
+        // which user(s) caused the problem.
+        super(message + "with id " + userId);
+        this.name = "UserNotFoundError";
+    }
+}
+
+export class ConversationFoundError extends Error {
+    readonly statuscode = 404;
+
+    constructor(message = "Conversation not found", convoId: string) {
+        // Include the missing ID(s) in the message so the caller knows exactly
+        // which user(s) caused the problem.
+        super(message + "with id " + convoId);
+        this.name = "ConversationFoundError";
+    }
 }
 
 /**
@@ -200,6 +206,15 @@ export class GroupNameRequired extends Error {
     constructor(message: string) {
         super(message);
         this.name = "GroupNameRequired";
+    }
+}
+
+export class RenameError extends Error {
+    readonly statusCode = 400;
+
+    constructor(message: string) {
+        super(message);
+        this.name = "RenameError";
     }
 }
 
@@ -268,7 +283,7 @@ export async function createConversation(input: CreateConversationBody): Promise
     // user ID doesn't exist. We figure out WHICH ones are missing so the
     // error message is helpful.
     if (foundUsers.length !== uniqueIds.length) {
-        const foundSet   = new Set(foundUsers.map((u) => u.id));
+        const foundSet = new Set(foundUsers.map((u) => u.id));
         const missingIds = uniqueIds.filter((id) => !foundSet.has(id));
 
         // Join the missing IDs into a readable string, e.g. "abc123, def456"
@@ -338,45 +353,39 @@ export async function createConversation(input: CreateConversationBody): Promise
 }
 
 
-
-
-export async function getConversation(id:string, currentUserId:string):Promise<ConversationDetail>{
+export async function getConversation(id: string, currentUserId: string): Promise<ConversationDetail> {
 
     // find the convo from the db
-    const convo = await  prisma.conversation.findUnique({
-        where:{
+    const convo = await prisma.conversation.findUnique({
+        where: {
             id: id
         },
-        select:{
-            id:true,
-            isGroup:true,
-            participants:{
-                select:{
-                    id:true, role:true, joinTime:true,
-                    user:{
-                        select:{
-                            id:true,
-                            username:true,
-                            avatarAddress:true,
-                            lastSeen:true,
+        select: {
+            id: true,
+            isGroup: true,
+            participants: {
+                select: {
+                    id: true, role: true, joinTime: true,
+                    user: {
+                        select: {
+                            id: true,
+                            username: true,
+                            avatarAddress: true,
+                            lastSeen: true,
                         }
                     }
                 }
             },
             messages: {
-            orderBy: { createdAt: "desc" }, // newest first
-            take: 1,                        // only the latest one
+                orderBy: { createdAt: "desc" }, // newest first
+                take: 1,                        // only the latest one
             },
-            name:true,
-            createdAt:true
-
+            name: true,
+            createdAt: true,
         }
-    })
+    });
 
     if (!convo) throw new Error("Conversation not found");
-   
-
-     
 
     // participants: {
     //     id: string;
@@ -390,62 +399,61 @@ export async function getConversation(id:string, currentUserId:string):Promise<C
     //     };
     // }[];
 
+    const participants = convo.participants;
 
- const participants = convo.participants;
+    const unreadCount = await prisma.message.count({
+        where: {
+            conversationId: id,
+            senderId: { not: currentUserId },      // exclude my own messages
+            deletedAt: null,                       // exclude soft-deleted
+            receipt: { none: { userId: currentUserId } }, // I haven't read them
+        },
+    });
 
+    // ── Shape coercion to match ConversationSummary ──────────────────────────────
+    // joinTime is stored as Date in Prisma — schema expects ISO 8601 string.
+    const shapedParticipants = participants.map((p) => ({
+        ...p,
+        joinTime: p.joinTime.toISOString(),
+    }));
 
-const unreadCount = await prisma.message.count({
-  where: {
-    conversationId: id,
-    senderId: { not: currentUserId },      // exclude my own messages
-    deletedAt: null,                       // exclude soft-deleted
-    receipt: { none: { userId: currentUserId } }, // I haven't read them
-  },
-});
+    // messages is returned as an array (take: 1). Schema expects a single object
+    // or null, never an array.
+    const lastMessage = convo.messages[0]
+        ? {
+            id: convo.messages[0].id,
+            textBody: convo.messages[0].textBody,
+            senderId: convo.messages[0].senderId,
+            createdAt: convo.messages[0].createdAt.toISOString(),
+        }
+        : null;
 
-// ── Shape coercion to match ConversationSummary ──────────────────────────────
-// joinTime is stored as Date in Prisma — schema expects ISO 8601 string.
-const shapedParticipants = participants.map((p) => ({
-    ...p,
-    joinTime: p.joinTime.toISOString(),
-}));
+    // displayName: for groups use the stored name; for DMs use the other user's username.
+    const displayName = convo.isGroup
+        ? (convo.name ?? "")
+        : (participants.find((p) => p.user.id !== currentUserId)?.user.username ?? "");
 
-// messages is returned as an array (take: 1). Schema expects a single object
-// or null, never an array.
-const lastMessage = convo.messages[0]
-    ? {
-          id:        convo.messages[0].id,
-          textBody:  convo.messages[0].textBody,
-          senderId:  convo.messages[0].senderId,
-          createdAt: convo.messages[0].createdAt.toISOString(),
-      }
-    : null;
+    // displayPicture: group chats have no avatar in v1; DMs show the other user's avatar.
+    const displayPicture = convo.isGroup
+        ? null
+        : (participants.find((p) => p.user.id !== currentUserId)?.user.avatarAddress ?? null);
 
-// displayName: for groups use the stored name; for DMs use the other user's username.
-const displayName = convo.isGroup
-    ? (convo.name ?? "")
-    : (participants.find((p) => p.user.id !== currentUserId)?.user.username ?? "");
-
-// displayPicture: group chats have no avatar in v1; DMs show the other user's avatar.
-const displayPicture = convo.isGroup
-    ? null
-    : (participants.find((p) => p.user.id !== currentUserId)?.user.avatarAddress ?? null);
-
-return {
-    id:             convo.id,
-    isGroup:        convo.isGroup,
-    participants:   shapedParticipants,
-    lastMessage:    lastMessage,
-    createdAt:      convo.createdAt.toISOString(),   // toISOString() → valid datetime string
-    unreadCount:    unreadCount,
-    displayName:    displayName,
-    displayPicture: displayPicture,
-};
-
+    return {
+        id: convo.id,
+        isGroup: convo.isGroup,
+        participants: shapedParticipants,
+        lastMessage: lastMessage,
+        createdAt: convo.createdAt.toISOString(),   // toISOString() → valid datetime string
+        unreadCount: unreadCount,
+        displayName: displayName,
+        displayPicture: displayPicture,
+    };
 }
 
 
 export async function getAllConversations(currentUserId: string): Promise<ConversationSummary[]> {
+
+    // current user id you will get from the authorization middleware from req.user.id
 
     // ── 1. Fetch all conversations the current user belongs to ────────────────
     // We include the last message (take:1 ordered desc) and all participants
@@ -456,21 +464,21 @@ export async function getAllConversations(currentUserId: string): Promise<Conver
             participants: { some: { userId: currentUserId } }, // only my convos
         },
         select: {
-            id:      true,
+            id: true,
             isGroup: true,
-            name:    true,
+            name: true,
             createdAt: true,
             participants: {
                 select: {
-                    id:       true,
-                    role:     true,
+                    id: true,
+                    role: true,
                     joinTime: true,
                     user: {
                         select: {
-                            id:            true,
-                            username:      true,
+                            id: true,
+                            username: true,
                             avatarAddress: true,
-                            lastSeen:      true,
+                            lastSeen: true,
                         },
                     },
                 },
@@ -490,9 +498,9 @@ export async function getAllConversations(currentUserId: string): Promise<Conver
         by: ["conversationId"],
         where: {
             conversationId: { in: conversations.map((c) => c.id) },
-            senderId:       { not: currentUserId },   // not my own messages
-            deletedAt:      null,                     // not soft-deleted
-            receipt:        { none: { userId: currentUserId } }, // I haven't read them
+            senderId: { not: currentUserId },   // not my own messages
+            deletedAt: null,                    // not soft-deleted
+            receipt: { none: { userId: currentUserId } }, // I haven't read them
         },
         _count: { id: true },
     });
@@ -514,11 +522,11 @@ export async function getAllConversations(currentUserId: string): Promise<Conver
         // messages is an array (take: 1) — schema expects object | null.
         const lastMessage = convo.messages[0]
             ? {
-                  id:        convo.messages[0].id,
-                  textBody:  convo.messages[0].textBody,
-                  senderId:  convo.messages[0].senderId,
-                  createdAt: convo.messages[0].createdAt.toISOString(),
-              }
+                id: convo.messages[0].id,
+                textBody: convo.messages[0].textBody,
+                senderId: convo.messages[0].senderId,
+                createdAt: convo.messages[0].createdAt.toISOString(),
+            }
             : null;
 
         // displayName: group name for groups, other user's username for DMs.
@@ -532,16 +540,115 @@ export async function getAllConversations(currentUserId: string): Promise<Conver
             : (convo.participants.find((p) => p.user.id !== currentUserId)?.user.avatarAddress ?? null);
 
         return {
-            id:             convo.id,
-            isGroup:        convo.isGroup,
-            displayName:    displayName,
+            id: convo.id,
+            isGroup: convo.isGroup,
+            displayName: displayName,
             displayPicture: displayPicture,
-            participants:   shapedParticipants,
-            lastMessage:    lastMessage,
-            unreadCount:    unreadByConvoId.get(convo.id) ?? 0,
-            createdAt:      convo.createdAt.toISOString(),
+            participants: shapedParticipants,
+            lastMessage: lastMessage,
+            unreadCount: unreadByConvoId.get(convo.id) ?? 0,
+            createdAt: convo.createdAt.toISOString(),
         };
     });
 
     return summaries;
+}
+
+
+export async function getParticipents(id: string): Promise<Participant[]> {
+
+    const conv = await prisma.participant.findMany({
+        where: {
+            conversationId: id
+        },
+        select: {
+            id: true, role: true, joinTime: true,
+            user: {
+                select: {
+                    id: true, username: true, avatarAddress: true, lastSeen: true
+                }
+            }
+        }
+    });
+
+    if (!conv) {
+        throw new ConversationFoundError("", id);
+    }
+
+    const result = conv.map(p => ({
+        ...p,
+        joinTime: p.joinTime.toISOString()
+    }));
+
+    return result;
+}
+
+
+export async function deleteParticipent(idConvo: string, id: string) {
+
+    // veirfy the the convo exist along side with teh participent
+    const conv = await prisma.participant.findUnique({
+        where: {
+            id: id,
+        },
+        select: {
+            id: true, role: true, joinTime: true,
+            user: {
+                select: {
+                    id: true, username: true, avatarAddress: true, lastSeen: true
+                }
+            }
+        }
+    });
+
+    if (!conv) {
+        throw new ConversationFoundError("", id);
+    }
+
+    // delete it from the convo
+    await prisma.participant.delete({
+        where: {
+            id: id,
+        },
+    });
+
+    return { message: "Participant removed from conversation successfully." };
+}
+
+type Rename = Pick<ConversationSummary, "id" | "displayName" | "createdAt"> & {
+    oldName: string | null;
+};
+
+export async function renameGroup(id: string, name: string): Promise<Rename> {
+
+    // verify that the convo existe
+    const conv = await prisma.conversation.findUnique({
+        where: {
+            id: id
+        },
+        select: {
+            id: true, isGroup: true, name: true, createdAt: true
+        }
+    });
+
+    if (!conv) {
+        throw new ConversationFoundError("", id);
+    }
+
+    // verify it's not group
+    if (!conv.isGroup) {
+        throw new RenameError("you cannot rename a group");
+    }
+
+    // update the name in the database
+    await prisma.conversation.update({
+        where: { id },
+        data: { name },
+    });
+
+    const output = {
+        id: conv.id, displayName: name, oldName: conv.name, createdAt: conv.createdAt.toISOString()
+    };
+
+    return output;
 }
