@@ -52,27 +52,40 @@ export async function getMessageService(convoId:string, userId:string, cursor?:s
 
 
 
-export async function readMessage(userId:string, messageId:string):Promise<Receipt> {
-// verify that the use belong to the conversation
- const conversation = await prisma.message.findFirst({where:{id:messageId}})
- const belong = await prisma.participant.findFirst({
-        where:{
-            userId : userId, conversationId:conversation?.conversationId
-        }
-    })
+export async function readMessage(userId: string, conversationId: string): Promise<number> {
+    // verify that the user belongs to the conversation
+    const prt = await prisma.participant.findUnique({
+        where: {
+            userId_conversationId: { userId, conversationId },
+        },
+    });
 
-     if(!belong){
-     throw new NotAllowed("you are not allowed for this conversation")
+    if (!prt) {
+        throw new NotAllowed("you are not allowed for this conversation");
     }
 
-    const read = await prisma.receipt.create({
-     data:{
-        userId: userId, messageId:messageId
-     }   
-    })
+    // find all messages in this conversation not yet seen by this user
+    const unreadMessages = await prisma.message.findMany({
+        where: {
+            conversationId,
+            receipt: {
+                none: { userId },
+            },
+        },
+        select: { id: true },
+    });
 
 
-    return read
+    // bulk-insert all unread messages into Receipt to mark them as read
+    const { count } = await prisma.receipt.createMany({
+        data: unreadMessages.map((msg) => ({
+            messageId: msg.id,
+            userId,
+        })),
+        skipDuplicates: true, // safe against race conditions
+    });
+
+    return count ? count : 0
 
 
 }
