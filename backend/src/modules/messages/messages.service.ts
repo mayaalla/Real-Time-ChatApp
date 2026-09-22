@@ -1,4 +1,5 @@
 import { prisma } from "../../db/prisma.js";
+import type { User } from "../../generated/prisma/client.js";
 
 
 
@@ -6,11 +7,13 @@ import { prisma } from "../../db/prisma.js";
 export class NotAllowed extends Error {
     readonly statusCode = 403;
 
-    constructor(message="you are not allowed for this conversation") {
+    constructor(message:string) {
         super(message);
         this.name = "NotAllowed";
     }
 }
+
+
 
 type MessagesOutput ={
     hasMore:true,
@@ -29,7 +32,7 @@ export async function getMessageService(convoId:string, userId:string, cursor?:s
     })
 
     if(!belong){
-     throw new NotAllowed("")
+     throw new NotAllowed("you are not allowed for this conversation")
     }
 
  const rows = await prisma.message.findMany({
@@ -47,4 +50,65 @@ export async function getMessageService(convoId:string, userId:string, cursor?:s
     
 }
 
+export async function readMessage(userId:string, messageId:string):Promise<void> {
+// verify that the use belong to the conversation
+ const conversation = await prisma.message.findFirst({where:{id:messageId}})
+ const belong = await prisma.participant.findFirst({
+        where:{
+            userId : userId, conversationId:conversation?.conversationId
+        }
+    })
 
+     if(!belong){
+     throw new NotAllowed("you are not allowed for this conversation")
+    }
+
+    const read = prisma.receipt.create({
+     data:{
+        userId: userId, messageId:messageId
+     }   
+    })
+
+}
+
+export async function deleteMessage(messageId:string, userId:string) {
+
+    const sender = await prisma.message.findFirst({
+        where:{
+            id: messageId,
+            senderId: userId, 
+        }
+    })
+
+
+    if(!sender){
+        throw new NotAllowed("you are not allowed to delete this message")
+    }
+    const message = await prisma.message.update({
+        where:{
+            id:messageId
+        },
+        data:{
+            deletedAt: new Date()
+        }
+    })
+    
+}
+
+
+export async function modifyMessage(messageId:string, userId:string) {
+    
+    const sender = await prisma.message.findFirst({
+        where:{
+            id: messageId,
+            senderId: userId, 
+        }
+    })
+
+
+    if(!sender){
+        throw new NotAllowed("you are not allowed to modfiy this message")
+    }
+
+    
+}
