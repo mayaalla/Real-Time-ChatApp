@@ -1,5 +1,5 @@
 import { prisma } from "../../db/prisma.js";
-import type { User } from "../../generated/prisma/client.js";
+import type { Message, Receipt, User } from "../../generated/prisma/client.js";
 
 
 
@@ -50,7 +50,9 @@ export async function getMessageService(convoId:string, userId:string, cursor?:s
     
 }
 
-export async function readMessage(userId:string, messageId:string):Promise<void> {
+
+
+export async function readMessage(userId:string, messageId:string):Promise<Receipt> {
 // verify that the use belong to the conversation
  const conversation = await prisma.message.findFirst({where:{id:messageId}})
  const belong = await prisma.participant.findFirst({
@@ -63,15 +65,19 @@ export async function readMessage(userId:string, messageId:string):Promise<void>
      throw new NotAllowed("you are not allowed for this conversation")
     }
 
-    const read = prisma.receipt.create({
+    const read = await prisma.receipt.create({
      data:{
         userId: userId, messageId:messageId
      }   
     })
 
+
+    return read
+
+
 }
 
-export async function deleteMessage(messageId:string, userId:string) {
+export async function deleteMessage(messageId:string, userId:string):Promise<Message> {
 
     const sender = await prisma.message.findFirst({
         where:{
@@ -92,13 +98,14 @@ export async function deleteMessage(messageId:string, userId:string) {
             deletedAt: new Date()
         }
     })
-    
+ 
+    return message
 }
 
 
-export async function modifyMessage(messageId:string, userId:string) {
+export async function modifyMessage(messageId:string, userId:string, textBody:string):Promise<Message> {
     
-    const sender = await prisma.message.findFirst({
+    const message = await prisma.message.findFirst({
         where:{
             id: messageId,
             senderId: userId, 
@@ -106,9 +113,24 @@ export async function modifyMessage(messageId:string, userId:string) {
     })
 
 
-    if(!sender){
+    if(!message){
         throw new NotAllowed("you are not allowed to modfiy this message")
     }
 
+    if(!message.textBody){
+         throw new NotAllowed("you are not allowed to modfiy this message")
+    }
+
+    const newMessage = await prisma.message.update({
+        where:{
+            id: message.id
+        },
+        data:{
+            textBody:textBody,
+            editedAt: new Date()
+        }
+    })
+
+    return newMessage
     
 }
