@@ -17,13 +17,16 @@ import type {
   GetMessagesQuery,
   MessageParams,
   EditMessageBody,
+  SendMessageBody,
 } from "./messages.schemas.js";
 import {
   getMessageService,
   markRead,
   deleteMessage,
   modifyMessage,
+  sendMessage,
   NotAllowed,
+  NotFound,
 } from "./messages.service.js";
 
 // ─── GET /api/conversations/:id/messages ─────────────────────
@@ -180,6 +183,62 @@ export async function editMessageController(
 
     res.status(200).json({ ok: true, data: { message } });
   } catch (err) {
+    if (err instanceof NotAllowed) {
+      res.status(403).json({
+        ok: false,
+        code: "FORBIDDEN",
+        message: err.message,
+      });
+      return;
+    }
+
+    next(err);
+  }
+}
+
+// ─── POST /api/conversations/:id/messages ────────────────────
+
+/**
+ * Create and persist a new message in a conversation.
+ *
+ * The client must obtain a signed-upload URL for each attachment beforehand
+ * via POST /api/uploads/sign.  Pass the resulting filenames in `attachments`;
+ * the service resolves each one into a permanent Cloudinary public URL and
+ * stores it in `Message.attachmentAddress` (String[] column).
+ *
+ * Params: { id }                      — conversation UUID (validated by Zod).
+ * Body:   { textBody?, attachments? } — at least one must be present (enforced
+ *                                       by Zod refine in SendMessageBodySchema).
+ *
+ * On success → 201 { ok: true, data: { message } }
+ * On 403     → caller is not a participant of the conversation.
+ * On 404     → conversation or user not found.
+ * Anything else is forwarded to the global error handler.
+ */
+export async function sendMessageController(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { id: conversationId } = req.params as unknown as ConversationParams;
+    const { textBody, attachments } = req.body as SendMessageBody;
+    const userId = authReq.user.id;
+
+    const message = await sendMessage(conversationId, userId, textBody, attachments);
+
+    res.status(201).json({ ok: true, data: { message } });
+  } catch (err) {
+    if (err instanceof NotFound) {
+      res.status(404).json({
+        ok: false,
+        code: "NOT_FOUND",
+        message: err.message,
+      });
+      return;
+    }
+
     if (err instanceof NotAllowed) {
       res.status(403).json({
         ok: false,

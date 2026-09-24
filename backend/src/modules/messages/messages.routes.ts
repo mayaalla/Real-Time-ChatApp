@@ -22,12 +22,14 @@ import {
   MarkReadBodySchema,
   MessageParamsSchema,
   EditMessageBodySchema,
+  SendMessageBodySchema,
 } from "./messages.schemas.js";
 import {
   getMessagesController,
   markReadController,
   deleteMessageController,
   editMessageController,
+  sendMessageController,
 } from "./messages.controller.js";
 
 const router = Router();
@@ -102,5 +104,30 @@ router.patch(
   }),
   editMessageController,
 );
+
+
+
+// ── POST /api/conversations/:id/messages ─────────────────────
+// Creates and persists a new message in a conversation.
+//
+// Auth:   Bearer token required (authenticate middleware).
+// Params: { id }                      — conversation UUID (validated).
+// Body:   { textBody?, attachments? } — at least one must be present
+//           (Zod refine enforces this — an empty body is rejected with 400).
+//           `attachments` is an array of filenames the client has already
+//           obtained signed-upload tokens for via POST /api/uploads/sign.
+//
+// Response: { ok: true, data: { message } }
+router.post(
+  "/:id/messages",
+  authenticate,
+  validate({
+    params: ConversationParamsSchema,
+    body: SendMessageBodySchema,
+  }),
+  sendMessageController,
+);
+
+
 
 export default router;
