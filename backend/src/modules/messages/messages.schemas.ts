@@ -159,3 +159,37 @@ export const PaginatedMessagesSchema = z.object({
 });
 
 export type PaginatedMessages = z.infer<typeof PaginatedMessagesSchema>;
+
+// ─── POST /api/conversations/:id/messages — request body ─────
+
+/**
+ * Body for sending a new message.
+ *
+ * Rules (mirrors the service guard in sendMessage()):
+ *  • textBody    — the text content; optional, trimmed, must be non-empty when present.
+ *  • attachments — filenames of files the client already has signed-upload URLs for
+ *                  (obtained via POST /api/uploads/sign). The service calls
+ *                  signUploadService for each one to resolve the permanent Cloudinary
+ *                  public URLs before persisting the Message row.
+ *  • At least one of textBody or attachments must be present — a completely empty
+ *    message is rejected.
+ */
+export const SendMessageBodySchema = z
+  .object({
+    textBody: z
+      .string()
+      .trim()
+      .min(1, "textBody cannot be empty")
+      .optional(),
+
+    attachments: z
+      .array(z.string().min(1, "attachment filename cannot be empty"))
+      .min(1, "attachments array must not be empty when provided")
+      .optional(),
+  })
+  .refine(
+    (data) => data.textBody !== undefined || (data.attachments?.length ?? 0) > 0,
+    { message: "A message must have a textBody, at least one attachment, or both" },
+  );
+
+export type SendMessageBody = z.infer<typeof SendMessageBodySchema>;
