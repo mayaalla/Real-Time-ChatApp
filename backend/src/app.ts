@@ -62,6 +62,9 @@ import { pinoHttp } from "pino-http";
 import { prisma } from "./db/prisma.js";
 import authRouter from "./modules/auth/auth.routes.js";
 import usersRouter from "./modules/users/users.routes.js";
+import uploadsRouter from "./modules/uploads/uploads.routes.js";
+import messagesRouter from "./modules/messages/messages.routes.js";
+import conversationsRouter from "./modules/conversations/conversations.routes.js";
 
 
 // ─────────────────────────────────────────────────────────────
@@ -177,6 +180,29 @@ export function createApp(): Application {
   // All routes protected by the authenticate middleware (applied in the router).
   app.use("/api/users", usersRouter);
 
+  // ─────────────────────────────────────────────────────────
+  // 📂 UPLOADS ROUTES — /api/uploads
+  // ─────────────────────────────────────────────────────────
+  // POST /api/uploads/sign → generate a signed URL for uploading an attachment to S3.
+  app.use("/api/uploads", uploadsRouter);
+
+  // ─────────────────────────────────────────────────────────
+  // 📂 MESSAGES ROUTES — /api/messages
+  // ─────────────────────────────────────────────────────────
+  // GET   /api/messages         → list messages     (Step 9.1)
+  // POST  /api/messages         → create message    (Step 9.2)
+  // PATCH /api/messages/:messageId → edit message    (Step 9.3)
+  // All routes protected by the authenticate middleware (applied in the router).
+  app.use("/api/messages", messagesRouter);
+
+  // ─────────────────────────────────────────────────────────
+  // 📂 CONVERSATIONS ROUTES — /api/conversations
+  // ─────────────────────────────────────────────────────────
+  // GET   /api/conversations         → list conversations     (Step 10.1)
+  // POST  /api/conversations         → create conversation    (Step 10.2)
+  // PATCH /api/conversations/:conversationId → edit conversation    (Step 10.3)
+  // All routes protected by the authenticate middleware (applied in the router).
+  app.use("/api/conversations", conversationsRouter);
 
   // ─────────────────────────────────────────────────────────
   // 🩺 HEALTH CHECK ROUTE — GET /api/health

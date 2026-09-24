@@ -22,6 +22,11 @@ const schema = z.object({
   // Examples: "15m", "1h", "7d"
   JWT_ACCESS_EXPIRES_IN: z.string().min(1).default("15m"),
   JWT_REFRESH_EXPIRES_IN: z.string().min(1).default("7d"),
+
+  CLOUDINARY_CLOUD_NAME: z.string().min(1),
+  CLOUDINARY_API_KEY: z.string().min(1),
+  CLOUDINARY_API_SECRET: z.string().min(1),
+  CLOUDINARY_URL: z.string().min(1),
 });
 
 const parsed = schema.safeParse(process.env);
