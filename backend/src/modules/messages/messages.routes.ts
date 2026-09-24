@@ -11,10 +11,6 @@
 //   2. Runs validate()              — parses & coerces params/query/body
 //                                     using the Zod schemas from .schemas.ts.
 //   3. Calls the controller         — pure HTTP plumbing, no logic here.
-//
-// NOTE TO REVIEWER: Routes are commented out until the controller file
-// is implemented (messages.controller.ts is currently a stub).
-// Remove the block-comment delimiters once the controller is ready.
 // ============================================================
 
 import { Router } from "express";
@@ -24,13 +20,15 @@ import {
   ConversationParamsSchema,
   GetMessagesQuerySchema,
   MarkReadBodySchema,
+  MessageParamsSchema,
+  EditMessageBodySchema,
 } from "./messages.schemas.js";
-
-// Uncomment this import once messages.controller.ts is implemented:
-// import {
-//   getMessagesController,
-//   markReadController,
-// } from "./messages.controller.js";
+import {
+  getMessagesController,
+  markReadController,
+  deleteMessageController,
+  editMessageController,
+} from "./messages.controller.js";
 
 const router = Router();
 
@@ -39,17 +37,10 @@ const router = Router();
 //
 // Auth:   Bearer token required (authenticate middleware).
 // Params: { id }           — conversation UUID (validated).
-// Query:  { cursor?, limit } — cursor = ISO-8601 createdAt of oldest
+// Query:  { cursor?, limit } — cursor = ISO-8601 createdAt of the oldest
 //                              message the client has; limit 1-100.
 //
 // Response: { ok: true, data: { messages[], nextCursor, hasMore } }
-//
-// The controller must:
-//   1. Verify the caller is a participant (via shared isParticipant()).
-//   2. Delegate to messagesService.getMessages().
-//   3. Return 200 with the PaginatedMessages shape.
-//
-/*
 router.get(
   "/:id/messages",
   authenticate,
@@ -59,7 +50,6 @@ router.get(
   }),
   getMessagesController,
 );
-*/
 
 // ── POST /api/conversations/:id/read ─────────────────────────
 // Bulk marks messages as read up to and including lastReadMessageId.
@@ -68,14 +58,7 @@ router.get(
 // Params: { id }                    — conversation UUID (validated).
 // Body:   { lastReadMessageId }     — UUID of the last seen message.
 //
-// Response: { ok: true, data: null }  (204-style, body for consistency)
-//
-// The controller must:
-//   1. Verify the caller is a participant (via shared isParticipant()).
-//   2. Delegate to messagesService.markRead().
-//   3. Return 200 (or 204) — this endpoint never 404s on missing receipts.
-//
-/*
+// Response: { ok: true, data: { markedCount } }
 router.post(
   "/:id/read",
   authenticate,
@@ -85,6 +68,39 @@ router.post(
   }),
   markReadController,
 );
-*/
+
+// ── DELETE /api/messages/:messageId ──────────────────────────
+// Soft-deletes a message owned by the caller (sets deletedAt).
+// Only the original sender can delete their own message.
+//
+// Auth:   Bearer token required.
+// Params: { messageId } — UUID of the message to delete.
+//
+// Response: { ok: true, data: { message } }
+router.delete(
+  "/messages/:messageId",
+  authenticate,
+  validate({ params: MessageParamsSchema }),
+  deleteMessageController,
+);
+
+// ── PATCH /api/messages/:messageId ───────────────────────────
+// Edits the textBody of a message owned by the caller (sets editedAt).
+// Attachment-only messages (no textBody) are rejected by the service.
+//
+// Auth:   Bearer token required.
+// Params: { messageId } — UUID of the message to edit.
+// Body:   { textBody }  — the replacement text (non-empty string).
+//
+// Response: { ok: true, data: { message } }
+router.patch(
+  "/messages/:messageId",
+  authenticate,
+  validate({
+    params: MessageParamsSchema,
+    body: EditMessageBodySchema,
+  }),
+  editMessageController,
+);
 
 export default router;

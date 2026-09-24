@@ -52,7 +52,7 @@ export async function getMessageService(convoId:string, userId:string, cursor?:s
 
 
 
-export async function readMessage(userId: string, conversationId: string): Promise<number> {
+export async function markRead(userId: string, conversationId: string): Promise<number> {
     // verify that the user belongs to the conversation
     const prt = await prisma.participant.findUnique({
         where: {
@@ -147,3 +147,4 @@ export async function modifyMessage(messageId:string, userId:string, textBody:st
     return newMessage
     
 }
+

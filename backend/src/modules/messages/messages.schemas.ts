@@ -73,6 +73,28 @@ export const MarkReadBodySchema = z.object({
 
 export type MarkReadBody = z.infer<typeof MarkReadBodySchema>;
 
+// ─── DELETE /api/messages/:messageId & PATCH /api/messages/:messageId ────────
+
+/**
+ * Route params for single-message endpoints (delete / edit).
+ */
+export const MessageParamsSchema = z.object({
+  messageId: z.string().uuid("messageId must be a valid UUID"),
+});
+
+export type MessageParams = z.infer<typeof MessageParamsSchema>;
+
+/**
+ * Body for PATCH /api/messages/:messageId — edit the text of a message.
+ * The service enforces that the message must already have a textBody
+ * (attachment-only messages cannot be edited this way).
+ */
+export const EditMessageBodySchema = z.object({
+  textBody: z.string().min(1, "textBody cannot be empty"),
+});
+
+export type EditMessageBody = z.infer<typeof EditMessageBodySchema>;
+
 // ─── Response shapes ─────────────────────────────────────────
 // These are NOT used for incoming validation — they document what the
 // service layer returns so callers have proper TypeScript types.
