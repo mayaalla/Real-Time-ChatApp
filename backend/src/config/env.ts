@@ -12,6 +12,8 @@ const schema = z.object({
   // Direct Neon string (no "-pooler"). Used only by migrations.
   DIRECT_URL: z.string().min(1),
 
+  REDIS_URL: z.string().optional(),        // optional until Part 15
+  CORS_ORIGIN: z.string().min(1).default("http://localhost:5173"),
   // ── JWT ────────────────────────────────────────────────────────────────────
   // Two separate secrets: a leaked refresh secret cannot forge an access token.
   // Minimum 32 characters so HMAC-SHA-256 has a full-block key.
@@ -23,10 +25,10 @@ const schema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().min(1).default("15m"),
   JWT_REFRESH_EXPIRES_IN: z.string().min(1).default("7d"),
 
-  CLOUDINARY_CLOUD_NAME: z.string().min(1),
-  CLOUDINARY_API_KEY: z.string().min(1),
-  CLOUDINARY_API_SECRET: z.string().min(1),
-  CLOUDINARY_URL: z.string().min(1),
+  CLOUDINARY_CLOUD_NAME: z.string().min(1).optional(),   // optional until Part 11
+  CLOUDINARY_API_KEY: z.string().min(1).optional(),
+  CLOUDINARY_API_SECRET: z.string().min(1).optional(),
+  CLOUDINARY_URL: z.string().min(1).optional(),
 });
 
 const parsed = schema.safeParse(process.env);
