@@ -205,6 +205,20 @@ export function createApp(): Application {
   app.use("/api/conversations", conversationsRouter);
 
   // ─────────────────────────────────────────────────────────
+  // 🏠 ROOT ROUTE — GET /
+  // ─────────────────────────────────────────────────────────
+  // A friendly landing page so opening localhost:4000 in the
+  // browser doesn't return a confusing 404.
+  app.get("/", (_req, res) => {
+    res.status(200).json({
+      ok: true,
+      message: "ChatApp API is running 🚀",
+      version: "1.0.0",
+      docs: "/api/health",
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────
   // 🩺 HEALTH CHECK ROUTE — GET /api/health
   // ─────────────────────────────────────────────────────────
   // 🔧 WHY: Health checks tell you (or a monitoring tool) whether the
