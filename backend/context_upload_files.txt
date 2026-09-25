@@ -1,0 +1,216 @@
+============================================================
+CHAT APP — PART 11 CONTEXT (FILE ATTACHMENTS / PRESIGNED UPLOADS)
+Self-contained context for an AI coding agent.
+Assumes Parts 0–10 are already done (agent has that context).
+ONE-LINE SUMMARY
+Let users send images and files in chat WITHOUT those file bytes
+ever passing through the backend or the Socket.IO connection.
+The backend only hands out short-lived, single-purpose upload
+permissions ("presigned URLs"). The file goes browser -> storage
+provider directly.
+
+GOAL (from the build plan, verbatim intent)
+Users can send images and files without those bytes ever passing
+through your backend or your socket.
+
+WHY THIS DESIGN:
+
+Large files would block/overload the Node server.
+Sending large binary over the Socket.IO connection would be
+catastrophic (sockets are for small, fast realtime messages,
+not big file transfers).
+Presigned uploads offload the heavy transfer to the storage
+provider (Cloudinary or S3), keeping the backend light.
+WHERE THIS CODE LIVES (module placement)
+Feature module: src/modules/uploads/ (created back in Step 2.3)
+
+Recommended files inside src/modules/uploads/:
+
+uploads.routes.ts -> declares POST /api/uploads/sign, protected
+uploads.controller.ts -> reads request, calls service, returns response
+uploads.service.ts -> the real logic: validate, build path, sign URL
+uploads.schema.ts -> Zod schema for input validation (name/type/size)
+ARCHITECTURE RULES THAT STILL APPLY (from earlier parts):
+
+ESM everywhere. Every relative import of your own files ends in ".js"
+even though the file on disk is ".ts"
+(e.g. import { env } from "../../config/env.js").
+Installed packages take NO extension.
+Strict TypeScript. No "any". Respect noUncheckedIndexedAccess.
+Only SERVICE files contain real external/DB logic. Routes and
+controllers stay thin. The storage/signing logic lives in
+uploads.service.ts, NOT in the route or controller.
+Protected route: reuse the existing auth guard middleware (from Part 7).
+The signing endpoint must require a logged-in user (req.user must exist).
+THINGS PART 11 DEPENDS ON (already defined in earlier parts)
+3a. ENVIRONMENT VARIABLES (defined in Step 4.1, validated in config/env.ts)
+Depending on chosen storage provider:
+
+Cloudinary (easiest):
+  CLOUDINARY_CLOUD_NAME
+  CLOUDINARY_API_KEY
+  CLOUDINARY_API_SECRET
+
+OR AWS S3 (more standard):
+  S3_BUCKET
+  S3_REGION
+  AWS_ACCESS_KEY_ID
+  AWS_SECRET_ACCESS_KEY
+
+NOTE: whichever provider is chosen, its keys must be added to the
+Zod env schema in src/config/env.ts and to .env / .env.example.
+Nothing is ever hard-coded.
+3b. MESSAGE TABLE (defined in Part 5 / Prisma schema)
+The Message model already has the field used to store the file:
+attachmentUrl String?
+Message also has: id (client-generated), conversationId, senderId,
+body String?, status, createdAt, editedAt?, deletedAt?
+Optional: if you want the UI to render a rich file card (icon + size),
+you MAY add attachmentType and attachmentSize fields via a NEW Prisma
+migration (never edit an applied migration; write a new one).
+
+STEP 11.1 — UNDERSTAND THE PRESIGNED UPLOAD IDEA
+The three-way conversation (memorize this flow):
+
+Browser -> Backend: "I want to upload this file (name, type, size).
+May I?"
+Backend -> Browser: validates the request, then returns a
+TEMPORARY, SINGLE-PURPOSE upload web address (the presigned URL),
+plus the final public address the file will have, plus an expiry time.
+Browser -> Storage provider: uploads the file bytes DIRECTLY to
+that presigned address. The backend never sees the bytes.
+Browser -> Backend: "Done. Here is the final address of the
+stored file." (this address is later attached to a message, Step 11.3)
+KEY MENTAL MODEL:
+Backend = a bouncer handing out one-time VIP passes.
+The heavy file goes straight from browser to storage.
+The backend only issues permission slips and records the result.
+
+DONE WHEN: you can describe the three-way conversation between
+browser, backend, and storage.
+
+STEP 11.2 — BUILD THE SIGNING ENDPOINT
+ENDPOINT: POST /api/uploads/sign
+PROTECTED: yes (requires authenticated user via auth guard middleware)
+
+INPUT (request body):
+
+fileName (the file's name)
+fileType (the MIME type, e.g. "image/png", "application/pdf")
+fileSize (in bytes)
+conversationId (needed to build the path AND to verify membership)
+VALIDATION (do this BEFORE signing anything; reject early):
+
+Allowed types ONLY: images, PDFs, and plain documents.
+Everything else is rejected before a URL is signed.
+(Define an explicit allow-list of MIME types.)
+Maximum file size, e.g. 10 megabytes (10 * 1024 * 1024 bytes).
+Reject anything larger before signing.
+Reject if any field missing or malformed (Zod).
+Reject if the user is not a participant of conversationId
+(reuse the membership check helper from Part 9 — do not sign an
+upload for a conversation the user is not in).
+STORAGE PATH GENERATION (the key that must not collide or be guessable):
+Build the object key/path from these pieces:
+- conversationId (which conversation the file belongs to)
+- userId (the uploader, from req.user)
+- date (e.g. YYYY/MM/DD)
+- a random identifier (e.g. a UUID or random token)
+Combining these guarantees:
+- no two uploads ever collide
+- the path cannot be guessed by a stranger
+(Optionally preserve a safe/sanitized file extension for correct
+content-type serving.)
+
+RETURN (response body):
+
+uploadUrl -> the temporary presigned address to upload TO
+publicUrl -> the final public address the file WILL have
+expiresAt -> when the upload permission expires
+(For S3 POST-policy style uploads you may also need to return form
+fields; for Cloudinary you return the signature + params. Adapt the
+exact shape to the chosen provider, but the three concepts above
+must be present.)
+DONE WHEN: you can take the returned upload address, use it in your API
+client (Postman/Insomnia) to upload a REAL image, then open the returned
+public address in a browser and see the image.
+
+STEP 11.3 — CONNECT ATTACHMENTS TO MESSAGES
+RULE TO ENFORCE IN VALIDATION:
+A message may carry text, an attachment, or both — but NOT NEITHER.
+(Reject a message that has neither body text nor an attachment.)
+
+STORAGE ON THE MESSAGE:
+
+Store the final public address in the message's attachmentUrl field.
+OPTIONAL: also store the file type and size (attachmentType,
+attachmentSize) if you want the UI to show a file card with an icon
+and a human-readable size. This requires the extra schema fields +
+a new migration (see 3b).
+INTEGRATION NOTE:
+This connects to the message-send flow (REST + socket) built earlier.
+The client:
+1. gets the presigned URL (11.2)
+2. uploads directly to storage
+3. sends a normal message whose attachmentUrl = the publicUrl
+The backend validates the "text or attachment or both" rule when the
+message is created.
+
+DONE WHEN: a message with ONLY an image (no text) renders sensibly in
+the history endpoint.
+
+STEP 11.4 — DECIDE THE CLEAN-UP POLICY
+PROBLEM: signed-but-never-used uploads leave orphan files in storage
+(someone requested a URL but never actually sent the message).
+
+PICK ONE and WRITE IT DOWN:
+Option A (fine for v1): accept orphan files for now, and record that
+decision explicitly.
+Option B (tidy): set a storage lifecycle rule that deletes unreferenced
+files in a temporary prefix after ~1 day. (e.g. upload first to a
+"tmp/" prefix with an auto-expire lifecycle rule; move/confirm on use.)
+
+DONE WHEN: the decision is recorded in the docs/ folder.
+
+FUNCTION CONTRACT CARDS (fill before coding — user's habit)
+CARD: signUpload (in uploads.service.ts)
+Purpose: validate an upload request and return a presigned upload URL.
+Inputs: userId: string,
+input: { fileName: string; fileType: string; fileSize: number;
+conversationId: string }
+Output: { uploadUrl: string; publicUrl: string; expiresAt: Date }
+Errors: - reject if fileType not in allow-list (images/PDF/plain docs)
+- reject if fileSize > MAX (e.g. 10MB)
+- reject if user is not a participant of conversationId
+Side effects: talks to storage provider SDK to create the signed URL.
+Notes: no DB writes here (the message is saved later, on send).
+
+CARD: controller for POST /api/uploads/sign
+Purpose: parse+validate body (Zod), read userId from req.user,
+call signUpload, return 200 with the result JSON.
+Errors: 400 on bad input, 401 if not authenticated, 403 if not a
+participant, 413/400 if too large or wrong type.
+
+CONSTANTS TO ADD (config/constants, from the Step 4.4 pattern)
+MAX_UPLOAD_BYTES (e.g. 10 * 1024 * 1024)
+ALLOWED_UPLOAD_TYPES (explicit MIME allow-list)
+UPLOAD_URL_TTL_SECONDS (how long the presigned URL is valid)
+UPLOAD_TMP_PREFIX (if using Option B cleanup, e.g. "tmp/")
+No magic numbers scattered in feature code.
+PART 11 ACCEPTANCE CHECKLIST (all must pass)
+[ ] 11.1 Can explain the browser <-> backend <-> storage 3-way flow.
+[ ] 11.2 POST /api/uploads/sign exists, is protected, validates type +
+size, builds a non-colliding non-guessable path, and returns
+uploadUrl + publicUrl + expiresAt.
+[ ] 11.2 Verified end-to-end: uploaded a real image via the returned
+URL, then opened the public URL in a browser successfully.
+[ ] 11.3 Message validation enforces "text OR attachment OR both, never
+neither"; attachmentUrl is stored; an image-only message
+renders in the history endpoint.
+[ ] 11.4 Clean-up policy chosen and written in docs/.
+[ ] Storage provider env vars added to config/env.ts + .env.example.
+[ ] Files placed in src/modules/uploads/; services hold the logic;
+ESM .js import extensions used; strict TS passes; lint passes.
+
+============================================================
+END OF PART 11 CONTEXT

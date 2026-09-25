@@ -212,7 +212,10 @@ MODEL: Message
   senderId          String   → User.id
   conversationId    String   → Conversation.id
   textBody          String?                      ← nullable (attachment-only message is valid)
-  attachmentAddress String?                      ← nullable URL (Cloudinary / S3)
+  attachmentAddress String[]                     ← array of URLs (Cloudinary / S3); empty [] when no attachments
+                                                   Changed from String? to String[] to support multiple
+                                                   attachments per message (images, PDFs, etc.) in one row.
+                                                   Prisma client regenerated after this change.
   status            Status   @default(SENT)
   createdAt         DateTime @default(now())
   editedAt          DateTime?                    ← null means never edited
@@ -617,7 +620,7 @@ Must implement (Parts 12-15 of build plan):
     Client → Server events:
       conversation:join    { conversationId }
       conversation:leave   { conversationId }
-      message:send         { id (client-gen), conversationId, textBody?, attachmentAddress? }
+      message:send         { id (client-gen), conversationId, textBody?, attachments?: string[] }
       message:read         { conversationId, lastReadMessageId }
       typing:start         { conversationId }
       typing:stop          { conversationId }
