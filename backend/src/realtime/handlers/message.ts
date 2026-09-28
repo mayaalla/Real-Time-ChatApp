@@ -93,7 +93,7 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
 
       const parsed = MessageSendSchema.safeParse(payload);
       if (!parsed.success) {
-        emitError(socket, "VALIDATION_ERROR", parsed.error.errors[0]?.message ?? "Invalid payload");
+        emitError(socket, "VALIDATION_ERROR", parsed.error.issues[0]?.message ?? "Invalid payload");
         return;
       }
 
