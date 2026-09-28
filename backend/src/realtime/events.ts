@@ -3,6 +3,8 @@ export const ClientEvents = {
     CONVERSATION_LEAVE: "conversation:leave",
     MESSAGE_SEND:       "message:send",
     MESSAGE_READ:       "message:read",
+    MESSAGE_EDIT:       "message:edit",
+    MESSAGE_DELETE:     "message:delete",
     TYPING_START:       "typing:start",
     TYPING_STOP:        "typing:stop",
     SYNC_SINCE:         "sync:since",
@@ -13,6 +15,8 @@ export const ClientEvents = {
     MESSAGE_NEW:           "message:new",
     MESSAGE_STATUS:        "message:status",
     TYPING_UPDATE:         "typing:update",
+    MESSAGE_EDITED:        "message:edited",
+    MESSAGE_DELETED:       "message:deleted",
     PRESENCE_UPDATE:       "presence:update",
     CONVERSATION_CREATED:  "conversation:created",
     ERROR:                 "error",
@@ -47,6 +51,16 @@ export interface ConversationJoinPayload {
   export interface MessageReadPayload {
     conversationId:    string;
     lastReadMessageId: string;       // the newest message the user actually saw
+  }
+
+  export interface MessageEditPayload {
+    id: string;
+    textBody?: string;
+    attachments?: string[];
+  }
+
+  export interface MessageDeletePayload {
+    id: string;
   }
   
   /** Client is typing */

@@ -5,6 +5,8 @@ import {
   type ConversationJoinPayload,
   type ConversationLeavePayload,
   type MessageSendPayload,
+  type MessageEditPayload,
+  type MessageDeletePayload,
 } from "../events.js";
 // Part 13 will fill this in
 import { isParticipant } from "../../modules/conversations/conversations.service.js";
@@ -183,7 +185,82 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
     }),
   );
 
+  // message:edit
+  socket.on(ClientEvents.MESSAGE_EDIT,
+    safeHandler<MessageEditPayload>(socket, async (payload) => {
+      const parsed = z.object({ id: z.string().uuid() }).safeParse(payload);
+      if (!parsed.success) {
+        emitError(socket, "VALIDATION_ERROR", "id must be a valid UUID");
+        return;
+      }
+
+      const { id } = parsed.data;
+
+      // check if the message exists
+      const message = await prisma.message.findUnique({ where: { id } });
+      if (!message) {
+        emitError(socket, "MESSAGE_NOT_FOUND", "Message not found");
+        return;
+      }
+      // check if the user is the sender of the message
+      if (message.senderId !== socket.data.userId) {
+        emitError(socket, "NOT_AUTHORIZED", "You are not the sender of this message");
+        return;
+      }
+      // update the message
+      const updatedMessage = await prisma.message.update({ where: { id }, data: { textBody: payload.textBody, attachmentAddress: payload.attachments, editedAt: new Date() } });
+      socket.emit(ServerEvents.MESSAGE_EDITED, { id: updatedMessage.id });
+      socket.to(message.conversationId).emit(ServerEvents.MESSAGE_EDITED, { id: updatedMessage.id });
+
+
+    }
+  ));
+  //message:delete
+  // DELETING A MESSAGE:
+  // The client sends event "message:delete" with: { messageId }
+  // The server:
+  //   1. Validates the payload
+  //   2. Looks up the message
+  //   3. Checks ownership (only your own messages)
+  //   4. Sets deletedAt = new Date() (SOFT DELETE — the row stays in the database)
+  //   5. Broadcasts "message:deleted" to the conversation room
+  // The frontend shows "message deleted" placeholder where the message was.
+  socket.on(ClientEvents.MESSAGE_DELETE,
+    safeHandler<MessageDeletePayload>(socket, async (payload) => {
+      const parsed = z.object({ id: z.string().uuid() }).safeParse(payload);
+      if (!parsed.success) {
+        emitError(socket, "VALIDATION_ERROR", "id must be a valid UUID");
+        return;
+      }
+
+      const { id } = parsed.data;
+      // check if the message exists
+      const message = await prisma.message.findUnique({ where: { id } });
+      if(!message){
+        emitError(socket, "MESSAGE_NOT_FOUND", "Message not found");
+        return;
+      }
+      // check if the user is the sender of the message
+      if (message.senderId !== socket.data.userId) {
+        emitError(socket, "NOT_AUTHORIZED", "You are not the sender of this message");
+        return;
+      }
+      // delete the message
+      const deletedMessage = await prisma.message.update({ where: { id }, data: { deletedAt: new Date() } });
+      socket.emit(ServerEvents.MESSAGE_DELETED, { id: deletedMessage.id });
+      socket.to(message.conversationId).emit(ServerEvents.MESSAGE_DELETED, { id: deletedMessage.id });
+    }
+  ));
+
+
+
 }
 
 
-// conversation:leave
+// NOTE — about "de-duplication by message id" (mentioned in Step 8 above):
+//   A user who IS in the conversation room gets message:new TWICE:
+//     Once from  socket.to(conversationId)   (Step 7)
+//     Once from  io.to("user:{userId}")      (Step 8)
+//   The frontend must check: "do I already have a message with this id?"
+//   If yes → ignore the second one. This is easy to do in React Query / Zustand.
+//   The backend keeps it simple by sending both; the frontend de-duplicates.
