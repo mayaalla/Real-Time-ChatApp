@@ -43,7 +43,7 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
       return;
     }
     // join the room
-    socket.join(conversationId);
+    await socket.join(conversationId);
     console.log(`${socket.data.username} joined conversation room ${conversationId}`);
 
     // tell the client it worked
@@ -51,5 +51,23 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
     }
   ));
 
+  socket.on(ClientEvents.CONVERSATION_LEAVE
+    ,  safeHandler<ConversationLeavePayload>(socket, async (payload) => {
+
+      const parsed = z.object({ conversationId: z.string().uuid() }).safeParse(payload);
+      if (!parsed.success) {
+        emitError(socket, "VALIDATION_ERROR", "conversationId must be a valid UUID");
+        return;
+      }
+      const { conversationId } = parsed.data;
+
+      await socket.leave(conversationId);
+
+      console.log(`${socket.data.username} left conversation room ${conversationId}`);
+    }
+  ));
 
 }
+
+
+// conversation:leave
