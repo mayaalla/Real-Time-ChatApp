@@ -281,6 +281,7 @@ import { env } from "../config/env.js";
 // We declare it here and fill it when initSocketServer() is called.
 let io: Server;
 
+
 /**
  * Create the socket server and attach it to the existing HTTP server.
  *
