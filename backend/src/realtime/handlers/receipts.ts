@@ -172,6 +172,25 @@ export function registerReceiptHandlers(io: Server, socket: Socket): void {
       });
     }
 
+    // Step 8: Recalculate unread count for this user in this conversation.
+    // We derive this from the receipts table — never from a stored counter —
+    // so it can never drift. Count only messages sent by others that have
+    // no receipt row yet for this user.
+    const newUnreadCount = await prisma.message.count({
+      where: {
+        conversationId,
+        senderId: { not: userId },
+        receipt:  { none: { userId } },
+      },
+    });
+
+    // Emit the fresh count to this user's personal room so the sidebar /
+    // conversation list can update the badge without a full re-fetch.
+    io.to(`user:${userId}`).emit("conversation:unread_count", {
+      conversationId,
+      unreadCount: newUnreadCount,
+    });
+
     console.log(
       `${socket.data.username} marked ${unreadMessages.length} messages as read in ${conversationId}`,
     );
