@@ -17,7 +17,6 @@ import { z } from "zod";
 // the user join a room of convo only if they open a chat, if they open other chat they leave the previous one
 // the nutiifcation for other chats will come only from thier personal room 
 
-
 export function registerMessageHandlers(io: Server, socket: Socket): void {
 
   // join convo
@@ -210,6 +209,8 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
       // update the message
       const updatedMessage = await prisma.message.update({ where: { id }, data: { textBody: payload.textBody, attachmentAddress: payload.attachments, editedAt: new Date() } });
       socket.emit(ServerEvents.MESSAGE_EDITED, { id: updatedMessage.id });
+
+      // broadcast to everyone else in the conversation 
       socket.to(message.conversationId).emit(ServerEvents.MESSAGE_EDITED, { id: updatedMessage.id });
 
 
