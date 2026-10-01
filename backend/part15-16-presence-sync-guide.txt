@@ -1,0 +1,1236 @@
+================================================================================
+  PART 15 — PRESENCE AND TYPING WITH REDIS
+  PART 16 — RECONNECTION SYNC
+  Step-by-step guide written in simple language
+  Your project: /media/maya/A4E6D724E6D6F610/Maya/Chatapp/backend
+================================================================================
+
+BEFORE YOU START — CHECKLIST FROM PART 14
+───────────────────────────────────────────
+Make sure ALL of these are true before you touch a single file here:
+
+  [ ] Server starts without crashing
+  [ ] Two browser tabs can send messages to each other in real time (Part 13)
+  [ ] SENT → DELIVERED → READ ticks work (Part 14)
+  [ ] src/realtime/handlers/presence.ts  EXISTS (stub file)
+  [ ] src/realtime/handlers/typing.ts    EXISTS (stub file)
+  [ ] src/redis/  folder EXISTS (currently empty or has .gitkeep only)
+  [ ] You have a Redis URL ready (see Step 15.2 — if not, read that step first)
+
+If any of those are not true, go back and finish Parts 12–14 first.
+
+================================================================================
+
+PART 15 — PRESENCE AND TYPING WITH REDIS
+Goal: Every user's online dot and "Alice is typing..." work correctly even
+      when two server instances are running at the same time.
+      Nothing is stored in the server's own memory.
+
+================================================================================
+
+STEP 15.1 — UNDERSTAND WHY YOU CANNOT USE MEMORY FOR THIS
+================================================================================
+
+WHAT IS THE PROBLEM?
+  Your server is a Node.js process. If you write:
+
+    const onlineUsers = new Set();
+
+  that Set lives inside ONLY that one process. If you spin up a SECOND server
+  process (for load balancing), that second process has its OWN empty Set.
+  So User A might be connected to Process 1 and look online there, but
+  Process 2 does not know about them at all — they appear offline to everyone
+  connected to Process 2.
+
+  Even with ONE server instance, if the process crashes and restarts, the
+  Set is gone. Everyone appears offline forever until they reconnect.
+
+THE FIX — REDIS:
+  Redis is a separate database that lives outside your Node.js process.
+  ALL server instances connect to the SAME Redis.
+  So when Process 1 writes "User A is online", Process 2 can read it too.
+  Every process sees the same truth.
+
+  Think of it like a whiteboard on the wall that everyone in the office
+  can read and write, instead of each person having their own notepad.
+
+THE REDIS TTL TRICK:
+  Redis lets you set an EXPIRY (TTL = Time To Live) on any key.
+  If you write "User A is online" with a 30-second expiry, and then
+  the server crashes and cannot renew it, the key disappears on its own
+  after 30 seconds. The user automatically appears offline — no cleanup code needed.
+
+✅ DONE WHEN: You can explain this in one sentence to yourself.
+  "I cannot use a variable in memory because that variable is private to one
+   process, but Redis is shared between all processes."
+
+================================================================================
+
+STEP 15.2 — CREATE THE REDIS CLIENTS
+================================================================================
+
+FIRST — GET A REDIS URL (if you do not have one yet)
+  Free option that needs no credit card: Upstash (https://upstash.com)
+  1. Sign up at upstash.com
+  2. Click "Create Database"
+  3. Give it any name (e.g. "chatapp")
+  4. Choose a region close to you
+  5. Click Create
+  6. On the database page, copy the value labeled "REDIS_URL"
+     It looks like:  rediss://default:SOMEPASSWORD@us1-xxx.upstash.io:6379
+     Note the "rediss" (with double s) — that means TLS (encrypted).
+     Upstash requires TLS. Do not use a plain "redis://" URL with Upstash.
+
+PUT THE URL IN YOUR .env FILE:
+  Open: backend/.env
+  Find the line:   REDIS_URL=
+  Change it to:    REDIS_URL=rediss://default:YOURPASSWORD@yourhost.upstash.io:6379
+
+  Also add REDIS_URL to your env.ts validator so the app validates it on startup.
+  
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/config/env.ts
+        Find the Zod schema object. Add this line to it:
+
+          REDIS_URL: z.string().url("REDIS_URL must be a valid URL"),
+
+        (Put it near the other connection strings like DATABASE_URL.)
+─────────────────────────────────────────────────────────────────────────────
+
+INSTALL THE PACKAGES:
+  Run this command in the backend/ folder:
+
+    npm install redis @socket.io/redis-adapter
+
+  That installs two things:
+    - "redis"                    → the official Node.js Redis client
+    - "@socket.io/redis-adapter" → lets Socket.IO broadcast across instances
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Create the file  src/redis/client.ts
+        (The redis/ folder already exists with a .gitkeep — just add the file)
+─────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/redis/client.ts  ────────────────────
+
+import { createClient } from "redis";
+import { env } from "../config/env.js";
+
+// ─── WHY THREE CLIENTS? ───────────────────────────────────────────────────────
+//
+// We need three separate Redis connections:
+//
+//   mainClient     → For normal reading and writing (get, set, del, expire, etc.)
+//
+//   publisherClient → Used by @socket.io/redis-adapter to PUBLISH messages.
+//                     Once a client is used for pub/sub, Redis locks it into
+//                     that mode and it cannot run normal commands anymore.
+//                     So we must keep pub/sub clients separate.
+//
+//   subscriberClient → Used by @socket.io/redis-adapter to SUBSCRIBE and receive
+//                      messages from other server instances.
+//
+// All three connect to the same Redis URL (same database).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makeClient(label: string) {
+  const client = createClient({
+    url: env.REDIS_URL,
+    socket: {
+      // TLS is required by hosted Redis providers (Upstash, Redis Cloud, etc.)
+      // If your REDIS_URL starts with "rediss://" this enables TLS automatically.
+      // We still set it explicitly so the intent is clear.
+      tls: env.REDIS_URL.startsWith("rediss://"),
+
+      // How long to wait before giving up on a connection attempt.
+      connectTimeout: 10_000,
+
+      // Automatically reconnect with increasing delays if the connection drops.
+      reconnectStrategy: (retries) => {
+        if (retries > 10) {
+          console.error(`[Redis:${label}] Too many reconnect attempts. Giving up.`);
+          return new Error("Redis reconnect limit reached");
+        }
+        // Wait longer each time: 100ms, 200ms, 400ms, 800ms … up to 3 seconds.
+        return Math.min(retries * 100, 3_000);
+      },
+    },
+  });
+
+  // Log errors so a Redis outage is visible in the terminal, not mysterious.
+  client.on("error", (err) => {
+    console.error(`[Redis:${label}] Error:`, err.message);
+  });
+
+  client.on("connect", () => {
+    console.log(`[Redis:${label}] Connected.`);
+  });
+
+  client.on("reconnecting", () => {
+    console.warn(`[Redis:${label}] Reconnecting…`);
+  });
+
+  return client;
+}
+
+// Create the three clients (not connected yet — .connect() is called below).
+export const redisClient     = makeClient("main");
+export const redisPublisher  = makeClient("publisher");
+export const redisSubscriber = makeClient("subscriber");
+
+/**
+ * Call this once at server startup. Connects all three clients to Redis.
+ * Throws if any connection fails, so the server does not start broken.
+ */
+export async function connectRedis(): Promise<void> {
+  await Promise.all([
+    redisClient.connect(),
+    redisPublisher.connect(),
+    redisSubscriber.connect(),
+  ]);
+  console.log("[Redis] All three clients connected successfully.");
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/server.ts
+        Call connectRedis() at server startup, BEFORE the server starts listening.
+
+        Find the section near the top that creates the HTTP server.
+        Add the import and the startup call like this:
+─────────────────────────────────────────────────────────────────────────────
+
+  // Add this import at the top of server.ts:
+  import { connectRedis } from "./redis/client.js";
+
+  // Then somewhere before httpServer.listen(...), add:
+  await connectRedis();
+
+  // Your existing listen call stays the same, e.g.:
+  httpServer.listen(env.PORT, () => {
+    console.log(`Server listening on port ${env.PORT}`);
+  });
+
+─────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • You run  npm run dev
+   • You see in the terminal:
+       [Redis:main] Connected.
+       [Redis:publisher] Connected.
+       [Redis:subscriber] Connected.
+       [Redis] All three clients connected successfully.
+   • The server does NOT crash
+
+================================================================================
+
+STEP 15.3 — DESIGN YOUR REDIS KEY NAMES
+================================================================================
+
+WHAT IS THIS?
+  Before writing any code that touches Redis, you must decide what your
+  keys are going to look like. A "key" in Redis is just a string — like a
+  variable name — that you use to store and find a value.
+
+  If you invent key names on the fly while coding, you will end up with
+  inconsistent names like "user_online_123" in one file and "online:user:123"
+  in another, and it becomes a nightmare to debug.
+
+  Write the scheme ONCE. Use it EVERYWHERE.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Create the folder  backend/docs/  (if it does not already exist)
+        Then create the file  backend/docs/redis-keys.md
+─────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  backend/docs/redis-keys.md  ─────────────
+
+# Redis Key Naming Scheme
+
+All keys follow a colon-separated hierarchy: `category:subcategory:identifier`
+
+---
+
+## presence:user:{userId}
+
+**Type:** Set (a collection of unique string values)
+**Example key:** `presence:user:11111111-2222-3333-4444-555555555555`
+**Example value:** `{ "socket-abc123", "socket-xyz789" }` (a set of socket IDs)
+
+**What it stores:** All the socket IDs that belong to this user RIGHT NOW.
+A user might have two browser tabs open = two socket IDs in this set.
+
+**Lifetime:** The key has a TTL of 60 seconds, refreshed every 30 seconds
+while the user is connected. If the server crashes and stops refreshing,
+the key expires on its own and the user automatically appears offline.
+
+**When it's created:** When a user's socket connects.
+**When it's deleted:** When the set becomes empty (all sockets disconnected).
+
+---
+
+## presence:online
+
+**Type:** Set
+**Example value:** `{ "userId-aaa", "userId-bbb" }` (a set of user IDs)
+
+**What it stores:** The set of all currently online user IDs.
+Useful for quick lookups like "how many people are online right now?"
+
+**Lifetime:** Entries are added on connect, removed on disconnect.
+No TTL on the set itself — it is managed manually.
+
+---
+
+## typing:{conversationId}:{userId}
+
+**Type:** String (the value doesn't matter — the key's EXISTENCE is the signal)
+**Example key:** `typing:abc-convo-id:user-id-111`
+**Example value:** `"1"` (just a placeholder)
+
+**What it stores:** The fact that this user is currently typing in this conversation.
+
+**Lifetime:** TTL of 5 seconds. Set fresh each time the client sends `typing:start`.
+If the user closes their laptop mid-sentence, the key disappears after 5 seconds
+and the "typing..." indicator vanishes automatically. No cleanup code needed.
+
+**When it's created:** When the server handles the `typing:start` event.
+**When it's deleted:** Either manually (on `typing:stop`) or automatically (TTL expires).
+
+---
+
+## ratelimit:{userId}:{windowTimestamp}
+
+**Type:** String (contains an integer counter)
+**Example key:** `ratelimit:user-id-111:1700000060`
+**Example value:** `"4"` (sent 4 messages in the current window)
+
+**What it stores:** How many messages this user has sent in the current time window.
+Used to block flood/spam attempts.
+
+**Lifetime:** TTL matches the window size (e.g., 60 seconds).
+The counter auto-deletes when the window ends.
+
+---
+
+## refresh:{tokenId}
+
+**Type:** String
+(Only used if you switch refresh tokens from Postgres to Redis — see context.txt)
+**Current decision:** Refresh tokens are stored in Postgres, NOT Redis.
+This key is documented here for completeness. Do not implement it unless
+you explicitly decide to move token storage to Redis.
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN: The file  backend/docs/redis-keys.md  exists with all key names
+   and their explanations.
+
+================================================================================
+
+STEP 15.4 — IMPLEMENT PRESENCE (ONLINE / OFFLINE)
+================================================================================
+
+WHAT HAPPENS STEP BY STEP:
+  1. User connects a socket → server adds that socket ID to the user's presence set
+     in Redis (key: presence:user:{userId})
+  2. Server sets a TTL of 60 seconds on that key and refreshes it every 30 seconds
+  3. User disconnects (or crashes) → server removes that socket ID from the set
+  4. If the set is now empty → user is offline → update lastSeen in Postgres →
+     broadcast "this user is now offline" to their contacts
+  5. If the set still has other entries → user has another tab open → still online
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/realtime/handlers/presence.ts
+        Replace everything in it with the code below.
+─────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/realtime/handlers/presence.ts  ───────
+
+import type { Server, Socket } from "socket.io";
+import { redisClient } from "../../redis/client.js";
+import { prisma } from "../../db/prisma.js";
+import { ServerEvents } from "../events.js";
+
+// ─── KEY HELPERS ──────────────────────────────────────────────────────────────
+// Always build key names using these functions. Never type the key strings by hand.
+
+const presenceKey  = (userId: string)  => `presence:user:${userId}`;
+const onlineSetKey = ()                => `presence:online`;
+
+// How long (in seconds) before a presence key expires if not refreshed.
+// A crashed server cannot refresh keys, so users go offline automatically.
+const PRESENCE_TTL_SECONDS = 60;
+
+// How often (in milliseconds) we refresh the TTL to keep the user online.
+// Must be less than PRESENCE_TTL_SECONDS.
+const PRESENCE_REFRESH_INTERVAL_MS = 30_000;  // 30 seconds
+
+
+/**
+ * Registers presence (online/offline) socket handlers.
+ * Call this once per new socket connection from realtime/index.ts.
+ */
+export function registerPresenceHandlers(io: Server, socket: Socket): void {
+
+  const userId:   string = socket.data.userId;
+  const username: string = socket.data.username;
+
+  // ── ON CONNECT ───────────────────────────────────────────────────────────────
+  // We run this immediately when the socket is registered.
+  void handleConnect(io, socket, userId);
+
+  // ── PRESENCE REFRESH ─────────────────────────────────────────────────────────
+  // Every 30 seconds, refresh the TTL on the presence key.
+  // This tells Redis: "this user is still connected, don't expire the key yet".
+  // If the server crashes, the interval stops, the TTL runs out, key disappears.
+  const refreshInterval = setInterval(async () => {
+    try {
+      await redisClient.expire(presenceKey(userId), PRESENCE_TTL_SECONDS);
+    } catch (err) {
+      console.error(`[Presence] Failed to refresh TTL for ${username}:`, err);
+    }
+  }, PRESENCE_REFRESH_INTERVAL_MS);
+
+  // ── ON DISCONNECT ────────────────────────────────────────────────────────────
+  // This runs when the socket closes (browser tab closed, network lost, etc.)
+  socket.on("disconnect", async () => {
+    clearInterval(refreshInterval);  // Stop refreshing — user is gone.
+    await handleDisconnect(io, socket, userId);
+  });
+}
+
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+async function handleConnect(io: Server, socket: Socket, userId: string): Promise<void> {
+  try {
+    // Add this socket ID to the user's presence set.
+    // SADD = "Set Add". Creates the set if it doesn't exist.
+    await redisClient.sAdd(presenceKey(userId), socket.id);
+
+    // Set the TTL. If we don't do this, the key lives forever (even if server crashes).
+    await redisClient.expire(presenceKey(userId), PRESENCE_TTL_SECONDS);
+
+    // Also add to the global "who is online" set.
+    await redisClient.sAdd(onlineSetKey(), userId);
+
+    // Tell the socket to join its personal user room.
+    // (This might already be done in index.ts — if so, remove this line to avoid duplication.)
+    await socket.join(`user:${userId}`);
+
+    // Broadcast "this user is online" to people who share a conversation with them.
+    await broadcastPresence(io, userId, true, null);
+
+    console.log(`[Presence] ${socket.data.username} connected (socket: ${socket.id})`);
+  } catch (err) {
+    console.error(`[Presence] handleConnect error for ${userId}:`, err);
+  }
+}
+
+
+async function handleDisconnect(io: Server, socket: Socket, userId: string): Promise<void> {
+  try {
+    // Remove this socket ID from the user's presence set.
+    // SREM = "Set Remove".
+    await redisClient.sRem(presenceKey(userId), socket.id);
+
+    // How many sockets does this user still have open?
+    const remainingCount = await redisClient.sCard(presenceKey(userId));
+
+    if (remainingCount === 0) {
+      // No more open sockets — the user is fully offline.
+
+      // Clean up the presence set and the global online set.
+      await redisClient.del(presenceKey(userId));
+      await redisClient.sRem(onlineSetKey(), userId);
+
+      // Record the last-seen time in Postgres.
+      const now = new Date();
+      await prisma.user.update({
+        where: { id: userId },
+        data:  { lastSeen: now },
+      });
+
+      // Tell this user's contacts: they are now offline.
+      await broadcastPresence(io, userId, false, now);
+
+      console.log(`[Presence] ${socket.data.username} is now offline.`);
+    } else {
+      // User still has other tabs open — they are still online.
+      console.log(`[Presence] ${socket.data.username} closed one tab (${remainingCount} remaining).`);
+    }
+  } catch (err) {
+    console.error(`[Presence] handleDisconnect error for ${userId}:`, err);
+  }
+}
+
+
+/**
+ * Finds everyone who shares a conversation with `userId` and sends them a
+ * presence:update event. This is how contacts learn that someone came online
+ * or went offline.
+ *
+ * We send to their personal user rooms (user:{contactId}) so it reaches them
+ * even if they are looking at a different conversation.
+ */
+async function broadcastPresence(
+  io:       Server,
+  userId:   string,
+  online:   boolean,
+  lastSeen: Date | null,
+): Promise<void> {
+  // Find everyone who shares at least one conversation with this user.
+  const participantRows = await prisma.participant.findMany({
+    where: {
+      conversation: {
+        participants: { some: { userId } },  // "is in a conversation with userId"
+      },
+      userId: { not: userId },               // exclude the user themselves
+    },
+    select: { userId: true },
+  });
+
+  // De-duplicate (same person could share multiple conversations).
+  const contactIds = [...new Set(participantRows.map((p) => p.userId))];
+
+  const payload = {
+    userId,
+    online,
+    lastSeen: lastSeen ? lastSeen.toISOString() : null,
+  };
+
+  for (const contactId of contactIds) {
+    io.to(`user:${contactId}`).emit(ServerEvents.PRESENCE_UPDATE, payload);
+  }
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOTE — Add "PRESENCE_UPDATE" to your events.ts if it is not there yet:
+  In src/realtime/events.ts, make sure ServerEvents has:
+
+    PRESENCE_UPDATE: "presence:update",
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/realtime/index.ts
+        Make sure registerPresenceHandlers is imported and called
+        for every new socket connection. It should look something like this:
+
+          import { registerPresenceHandlers } from "./handlers/presence.js";
+
+          io.on("connection", (socket) => {
+            registerPresenceHandlers(io, socket);   // ← add this line
+            registerMessageHandlers(io, socket);
+            registerReceiptHandlers(io, socket);
+            // ... other handlers
+          });
+─────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Open a browser tab → the server logs "[Presence] alice connected"
+   • Kill the browser tab → the server logs "[Presence] alice is now offline"
+   • Kill the entire server process abruptly (Ctrl+C) →
+     wait 60 seconds → the Redis keys expire on their own →
+     anyone still connected gets a presence:update { online: false } within 60s
+     (the TTL does the cleanup for you, not your code)
+
+================================================================================
+
+STEP 15.5 — IMPLEMENT TYPING INDICATORS
+================================================================================
+
+WHAT HAPPENS STEP BY STEP:
+  1. User starts typing → client sends "typing:start" event
+  2. Server writes a Redis key:  typing:{conversationId}:{userId}  with TTL 5 seconds
+  3. Server reads ALL typing keys for that conversation and broadcasts the list
+     of who is currently typing
+  4. User stops typing → client sends "typing:stop"
+  5. Server deletes the key immediately and broadcasts the updated list (now empty
+     or minus that user)
+  6. If the user closes their laptop mid-sentence → the 5-second TTL expires
+     on its own → the indicator disappears automatically (no cleanup code)
+
+IMPORTANT RULE FOR THE CLIENT (NOT your backend code):
+  The client must NOT send "typing:start" for every single keystroke.
+  Instead it should throttle: send "typing:start" at most once every 2–3 seconds.
+  The server sets/refreshes the 5-second TTL each time, so continuous typing
+  keeps the indicator alive. If the user pauses, the TTL runs out and the
+  indicator disappears.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/realtime/handlers/typing.ts
+        Replace everything in it with the code below.
+─────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/realtime/handlers/typing.ts  ─────────
+
+import type { Server, Socket } from "socket.io";
+import { z } from "zod";
+import { redisClient } from "../../redis/client.js";
+import { isParticipant } from "../../modules/conversations/conversations.service.js";
+import { ClientEvents, ServerEvents } from "../events.js";
+import { safeHandler, emitError } from "./utils.js";
+
+// ─── KEY HELPERS ──────────────────────────────────────────────────────────────
+
+const typingKey = (conversationId: string, userId: string) =>
+  `typing:${conversationId}:${userId}`;
+
+// Pattern used to scan all typing keys in a conversation.
+// Redis "KEYS typing:{conversationId}:*" finds all typers in a conversation.
+const typingPattern = (conversationId: string) => `typing:${conversationId}:*`;
+
+// Seconds before a "typing" marker expires automatically.
+// If the client stops sending typing:start, indicator disappears after this.
+const TYPING_TTL_SECONDS = 5;
+
+
+/**
+ * Registers typing indicator socket handlers.
+ * Call this once per new socket connection from realtime/index.ts.
+ */
+export function registerTypingHandlers(io: Server, socket: Socket): void {
+
+  // ── typing:start ─────────────────────────────────────────────────────────────
+  // Client sends this when the user starts typing (throttled — not every keystroke).
+  // We write a 5-second Redis key. If the client keeps sending this event, the
+  // TTL is refreshed each time and the indicator stays visible.
+
+  socket.on(
+    ClientEvents.TYPING_START,
+    safeHandler<{ conversationId: string }>(socket, async (payload) => {
+
+      const parsed = z.object({ conversationId: z.string().uuid() }).safeParse(payload);
+      if (!parsed.success) {
+        emitError(socket, "VALIDATION_ERROR", "conversationId must be a valid UUID");
+        return;
+      }
+
+      const { conversationId } = parsed.data;
+      const userId: string = socket.data.userId;
+
+      // Check membership — a non-member should not be able to fake a typing indicator.
+      const member = await isParticipant(userId, conversationId);
+      if (!member) {
+        emitError(socket, "NOT_MEMBER", "You are not a participant in this conversation");
+        return;
+      }
+
+      // Write the typing key. SET with EX = set with expiry in seconds.
+      // "NX" is NOT used here — we WANT to overwrite so the TTL is refreshed.
+      await redisClient.set(typingKey(conversationId, userId), "1", {
+        EX: TYPING_TTL_SECONDS,
+      });
+
+      // Broadcast the current list of typers to the conversation room.
+      await broadcastTypers(io, conversationId);
+    }),
+  );
+
+
+  // ── typing:stop ──────────────────────────────────────────────────────────────
+  // Client sends this when the user clears the input or sends the message.
+  // We delete the key immediately (instead of waiting for the 5-second TTL).
+
+  socket.on(
+    ClientEvents.TYPING_STOP,
+    safeHandler<{ conversationId: string }>(socket, async (payload) => {
+
+      const parsed = z.object({ conversationId: z.string().uuid() }).safeParse(payload);
+      if (!parsed.success) {
+        emitError(socket, "VALIDATION_ERROR", "conversationId must be a valid UUID");
+        return;
+      }
+
+      const { conversationId } = parsed.data;
+      const userId: string = socket.data.userId;
+
+      // Delete the typing key immediately.
+      await redisClient.del(typingKey(conversationId, userId));
+
+      // Broadcast the updated (now empty or shorter) list.
+      await broadcastTypers(io, conversationId);
+    }),
+  );
+}
+
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+/**
+ * Reads all currently active typing keys for a conversation from Redis,
+ * extracts the user IDs, and broadcasts the list to everyone in the room.
+ */
+async function broadcastTypers(io: Server, conversationId: string): Promise<void> {
+  // Find all keys that match the pattern  typing:{conversationId}:*
+  // Each matching key = one user currently typing.
+  const keys = await redisClient.keys(typingPattern(conversationId));
+
+  // Extract the userId from the end of each key.
+  // Key format is "typing:{conversationId}:{userId}" — we split and take the last part.
+  const typerIds = keys.map((key) => key.split(":").at(-1) as string);
+
+  // Send the current list to everyone in the conversation room.
+  io.to(conversationId).emit(ServerEvents.TYPING_UPDATE, {
+    conversationId,
+    typerIds,   // e.g. ["user-id-111", "user-id-222"]
+  });
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOTE — Add "TYPING_UPDATE" to your events.ts if it is not there yet:
+  In src/realtime/events.ts, make sure ServerEvents has:
+
+    TYPING_UPDATE: "typing:update",
+
+  And ClientEvents has:
+
+    TYPING_START: "typing:start",
+    TYPING_STOP:  "typing:stop",
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/realtime/index.ts
+        Import and register the typing handlers:
+
+          import { registerTypingHandlers } from "./handlers/typing.js";
+
+          io.on("connection", (socket) => {
+            registerPresenceHandlers(io, socket);
+            registerTypingHandlers(io, socket);    // ← add this line
+            registerMessageHandlers(io, socket);
+            registerReceiptHandlers(io, socket);
+          });
+─────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Tab A and Tab B are both in the same conversation
+   • Start typing in Tab A → Tab B shows "Alice is typing..."
+   • Stop typing in Tab A (or wait 5 seconds without typing) →
+     the indicator disappears in Tab B automatically
+   • Close Tab A suddenly (don't send typing:stop) →
+     the indicator still disappears in Tab B within 5 seconds (TTL magic)
+
+================================================================================
+
+STEP 15.6 — SHOW PRESENCE ON FIRST LOAD (NOT JUST ON EVENTS)
+================================================================================
+
+THE PROBLEM:
+  Your presence:update event fires when someone CHANGES status.
+  But what about when the user FIRST opens the app?
+  They do not get any events because nothing has changed.
+  They need to ask: "Who is currently online among my contacts?"
+
+THE FIX:
+  Add a REST endpoint (or a socket event) that the frontend calls ONCE on load
+  to get the current online status of all the user's contacts.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/realtime/index.ts
+        Add a new socket event handler  "presence:fetch"  inside the
+        io.on("connection") block:
+─────────────────────────────────────────────────────────────────────────────
+
+  // Add this import at the top of index.ts:
+  import { redisClient } from "../redis/client.js";
+
+  // Then inside  io.on("connection", (socket) => { ... })  add:
+
+  socket.on("presence:fetch", async () => {
+    const userId: string = socket.data.userId;
+
+    // Find all conversation partners for this user.
+    const rows = await prisma.participant.findMany({
+      where: {
+        conversation: { participants: { some: { userId } } },
+        userId: { not: userId },
+      },
+      select: { userId: true },
+    });
+
+    const contactIds = [...new Set(rows.map((r) => r.userId))];
+
+    // For each contact, check if they have a presence key in Redis.
+    const presenceList = await Promise.all(
+      contactIds.map(async (contactId) => {
+        const count = await redisClient.sCard(`presence:user:${contactId}`);
+        return { userId: contactId, online: count > 0 };
+      }),
+    );
+
+    // Send the full list back to just THIS socket (not the whole room).
+    socket.emit("presence:snapshot", presenceList);
+  });
+
+─────────────────────────────────────────────────────────────────────────────
+
+FRONTEND NOTE (so you remember when you build the UI):
+  On app load (after socket connects), the frontend sends:
+    socket.emit("presence:fetch")
+  And listens for the response:
+    socket.on("presence:snapshot", (list) => { /* update your store */ })
+
+  After that, all live updates come via  "presence:update"  events.
+
+✅ DONE WHEN:
+   • Refreshing the page shows correct online dots immediately,
+     not only after someone's status changes.
+   • You do NOT need to send a fake "status changed" event to make it work.
+
+================================================================================
+================================================================================
+
+PART 16 — RECONNECTION SYNC
+Goal: A user who loses their connection (in a lift, on the train, etc.)
+      comes back and sees EXACTLY the messages they missed.
+      No gaps. No duplicates.
+
+================================================================================
+
+STEP 16.1 — UNDERSTAND THE GAP PROBLEM
+================================================================================
+
+WHAT HAPPENS WITHOUT SYNC:
+  Imagine this sequence:
+    1. Alice and Bob are chatting.
+    2. Alice loses internet for 2 minutes.
+    3. Bob sends 5 messages.
+    4. Alice's internet comes back. Her socket reconnects.
+    5. Alice's screen shows… nothing. The 5 messages are in the database
+       but nobody sent them to Alice's socket. Her app is silently out of date.
+
+  Nothing in the socket layer tells Alice "you missed messages".
+  The socket just reconnects and starts receiving NEW messages from this point.
+  The gap (the 5 messages) is invisible.
+
+THE FIX:
+  Alice's app remembers the ID of the last message it received.
+  When the socket reconnects, it immediately says to the server:
+    "I last saw message X. Please send me everything after X."
+  The server looks up everything newer than X and sends it.
+
+  This needs:
+    - Client side: remember the last message ID per conversation
+    - Server side: handle a "sync:since" event that returns missing messages
+
+✅ DONE WHEN: You can describe the gap problem and its fix in plain English.
+
+================================================================================
+
+STEP 16.2 — BUILD THE SYNC EVENT (SERVER SIDE)
+================================================================================
+
+WHAT THIS DOES:
+  The client sends:
+    { conversationId: "uuid", since: "message-uuid" }
+    ("since" = the ID of the last message the client already has)
+
+  The server:
+    1. Checks membership
+    2. Finds the timestamp of the "since" message
+    3. Returns all messages in that conversation NEWER than that timestamp
+    4. If there are more than 200 missing messages, it tells the client
+       to reload from the REST endpoint instead (too much to sync this way)
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Create the file  src/realtime/handlers/sync.ts
+─────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/realtime/handlers/sync.ts  ───────────
+
+import type { Server, Socket } from "socket.io";
+import { z } from "zod";
+import { prisma } from "../../db/prisma.js";
+import { isParticipant } from "../../modules/conversations/conversations.service.js";
+import { safeHandler, emitError } from "./utils.js";
+
+// If the user missed more than this many messages, tell them to reload
+// from the REST endpoint (GET /api/conversations/:id/messages) instead.
+// Sending 500 messages over a socket in one go is too much.
+const MAX_SYNC_MESSAGES = 200;
+
+
+/**
+ * Registers the sync handler for missed messages after reconnection.
+ * Call this once per new socket connection from realtime/index.ts.
+ */
+export function registerSyncHandlers(io: Server, socket: Socket): void {
+
+  // ── sync:since ───────────────────────────────────────────────────────────────
+  // Client sends this on every reconnect for the currently open conversation.
+  // Payload: { conversationId, since }
+  //   since = the ID of the last message the client already has
+
+  socket.on(
+    "sync:since",
+    safeHandler<{ conversationId: string; since: string }>(socket, async (payload) => {
+
+      // Step 1: Validate
+      const parsed = z
+        .object({
+          conversationId: z.string().uuid(),
+          since:          z.string().uuid(),
+        })
+        .safeParse(payload);
+
+      if (!parsed.success) {
+        emitError(socket, "VALIDATION_ERROR", parsed.error.errors[0]?.message ?? "Invalid payload");
+        return;
+      }
+
+      const { conversationId, since } = parsed.data;
+      const userId: string = socket.data.userId;
+
+      // Step 2: Check membership
+      const member = await isParticipant(userId, conversationId);
+      if (!member) {
+        emitError(socket, "NOT_MEMBER", "You are not a participant in this conversation");
+        return;
+      }
+
+      // Step 3: Find the timestamp of the "since" message.
+      // We need it so we can query "everything newer than this".
+      const sinceMessage = await prisma.message.findUnique({
+        where:  { id: since },
+        select: { createdAt: true },
+      });
+
+      if (!sinceMessage) {
+        // The "since" message doesn't exist — this conversation must be new to the client.
+        // Tell the client to do a full reload via the REST endpoint.
+        socket.emit("sync:reload", { conversationId });
+        return;
+      }
+
+      // Step 4: Count how many messages are newer than "since".
+      const missedCount = await prisma.message.count({
+        where: {
+          conversationId,
+          createdAt: { gt: sinceMessage.createdAt },
+        },
+      });
+
+      // Step 5: If too many messages are missing, tell the client to reload.
+      // Sending 300 messages over a socket is bad for memory and UX.
+      if (missedCount > MAX_SYNC_MESSAGES) {
+        socket.emit("sync:reload", { conversationId });
+        return;
+      }
+
+      // Step 6: Fetch the missed messages.
+      const missedMessages = await prisma.message.findMany({
+        where: {
+          conversationId,
+          createdAt: { gt: sinceMessage.createdAt },
+        },
+        orderBy: { createdAt: "asc" },  // oldest first so the client can append in order
+        include: {
+          sender: {
+            select: { id: true, username: true, avatarAddress: true },
+          },
+        },
+      });
+
+      // Step 7: Send the missed messages back to THIS socket only.
+      // Format each message so it looks the same as a "message:new" payload.
+      const messages = missedMessages.map((m) => ({
+        id:             m.id,
+        conversationId: m.conversationId,
+        senderId:       m.senderId,
+        sender:         m.sender,
+        textBody:       m.textBody,
+        attachments:    m.attachmentAddress,
+        status:         m.status,
+        createdAt:      m.createdAt.toISOString(),
+        editedAt:       m.editedAt?.toISOString() ?? null,
+        deletedAt:      m.deletedAt?.toISOString() ?? null,
+      }));
+
+      socket.emit("sync:messages", {
+        conversationId,
+        messages,
+      });
+
+      if (messages.length > 0) {
+        console.log(
+          `[Sync] Sent ${messages.length} missed message(s) to ${socket.data.username} ` +
+          `in conversation ${conversationId}`,
+        );
+      }
+    }),
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/realtime/index.ts
+        Import and register the sync handler:
+
+          import { registerSyncHandlers } from "./handlers/sync.js";
+
+          io.on("connection", (socket) => {
+            registerPresenceHandlers(io, socket);
+            registerTypingHandlers(io, socket);
+            registerMessageHandlers(io, socket);
+            registerReceiptHandlers(io, socket);
+            registerSyncHandlers(io, socket);   // ← add this line
+          });
+─────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Disconnect for 2 minutes while another tab sends 5 messages.
+   • Reconnect. The client sends  sync:since  with the last message ID it had.
+   • The server responds with  sync:messages  containing exactly those 5 messages.
+   • No duplicates appear on screen (the client de-duplicates by message ID).
+
+================================================================================
+
+STEP 16.3 — MAKE THE CLIENT RECONNECT PROPERLY (FRONTEND RULES)
+================================================================================
+
+This step is RULES for the frontend (React side), not backend code.
+Write these rules in a doc so you have them when you build the frontend.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Create the file  backend/docs/reconnection.md
+─────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  backend/docs/reconnection.md  ────────────
+
+# Frontend Reconnection Rules
+
+## Rule 1 — Use Socket.IO's built-in reconnect, do not write your own.
+
+Socket.IO reconnects automatically. Configure it like this when creating the socket:
+
+```js
+const socket = io("http://localhost:4000", {
+  auth: { token: getAccessToken() },
+  reconnection:      true,
+  reconnectionDelay:     1_000,   // start with 1 second
+  reconnectionDelayMax: 10_000,   // never wait longer than 10 seconds
+  reconnectionAttempts:     Infinity,  // keep trying forever
+});
+```
+
+Do NOT set reconnectionAttempts to a small number or the app will
+give up after a few tries and show a broken state.
+
+
+## Rule 2 — On every successful reconnect, re-join rooms and sync.
+
+```js
+socket.on("connect", () => {
+  // If a conversation is currently open, re-join its room.
+  if (currentConversationId) {
+    socket.emit("conversation:join", { conversationId: currentConversationId });
+
+    // Then immediately ask for any missed messages.
+    const lastMessageId = getLastMessageIdForConversation(currentConversationId);
+    if (lastMessageId) {
+      socket.emit("sync:since", {
+        conversationId: currentConversationId,
+        since: lastMessageId,
+      });
+    }
+  }
+
+  // Also fetch current presence of all contacts.
+  socket.emit("presence:fetch");
+});
+```
+
+Note: the "connect" event fires on FIRST connect AND on every reconnect.
+So this code runs correctly in both cases.
+
+
+## Rule 3 — Handle sync:reload by falling back to the REST endpoint.
+
+```js
+socket.on("sync:reload", ({ conversationId }) => {
+  // The server says there are too many missed messages to sync over socket.
+  // Reload the conversation from the REST API:
+  //   GET /api/conversations/{conversationId}/messages
+  fetchConversationHistory(conversationId);
+});
+```
+
+
+## Rule 4 — Handle sync:messages by appending to the local store.
+
+```js
+socket.on("sync:messages", ({ conversationId, messages }) => {
+  for (const message of messages) {
+    // De-duplicate: only add if this ID is not already in the local list.
+    if (!messageExistsLocally(message.id)) {
+      addMessageToStore(conversationId, message);
+    }
+  }
+});
+```
+
+
+## Rule 5 — Handle expired tokens during reconnect.
+
+If the access token expired while the user was offline, Socket.IO's reconnect
+will be refused by the server (auth middleware rejects it).
+
+Listen for auth errors and refresh the token first:
+
+```js
+socket.on("connect_error", async (err) => {
+  if (err.message === "TOKEN_EXPIRED") {
+    // The access token expired. Refresh it first.
+    await refreshAccessToken();
+    // Update the auth token for the next reconnect attempt.
+    socket.auth = { token: getAccessToken() };
+    // Socket.IO will automatically retry the connection.
+  }
+});
+```
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • The file  backend/docs/reconnection.md  exists.
+   • You have read and understand all 5 rules.
+
+================================================================================
+
+STEP 16.4 — HANDLE MESSAGES SENT WHILE OFFLINE (FRONTEND RULES)
+================================================================================
+
+THE PROBLEM:
+  Alice is offline. She types 3 messages and hits Send on each one.
+  Her local app queues them (they cannot go out yet).
+  When she reconnects, the 3 messages are sent in order.
+  Because each message has a client-generated UUID (see context.txt Part 2.3),
+  even if one message somehow arrived before the disconnection, sending it
+  again will NOT create a duplicate — the server uses upsert.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Add these rules to  backend/docs/reconnection.md
+        (append at the bottom of the file you just created)
+─────────────────────────────────────────────────────────────────────────────
+
+────────────────── APPEND THIS TO  backend/docs/reconnection.md  ─────────────
+
+---
+
+## Offline Message Queue Rules
+
+### Rule 6 — Generate the UUID on the client BEFORE sending.
+
+When the user hits Send, immediately:
+1. Generate a UUID for the message (use the `uuid` npm package).
+2. Add the message to the local store with status "PENDING".
+3. Try to send it via  socket.emit("message:send", payload).
+4. If the socket is offline, save the message to a queue (array in memory or localStorage).
+
+### Rule 7 — On reconnect, flush the queue in order.
+
+```js
+socket.on("connect", async () => {
+  // ... re-join rooms, sync, etc. (from Rule 2) ...
+
+  // Then flush the offline queue.
+  const queue = getOfflineMessageQueue();   // read from localStorage or memory
+  for (const msg of queue) {
+    socket.emit("message:send", msg);
+    // The server's upsert means sending the same UUID twice is harmless.
+  }
+  clearOfflineMessageQueue();
+});
+```
+
+### Rule 8 — Mark failed messages visually.
+
+If a message fails permanently (the server responds with an error event
+after sending), mark it "FAILED" in the UI with a Retry button.
+Do NOT silently drop it.
+
+```js
+socket.on("error", ({ code, messageId }) => {
+  if (messageId) {
+    markMessageFailed(messageId);   // show retry button in UI
+  }
+});
+```
+
+### Rule 9 — Do NOT generate a new UUID on retry.
+
+If the user clicks Retry, resend the SAME message with the SAME UUID.
+The server's upsert handles it. If you generate a new UUID on retry,
+you risk creating a duplicate message in the database.
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Set your browser to "Offline" in dev tools.
+   • Type 3 messages and hit Send on each one. They appear as "PENDING" locally.
+   • Set browser back to "Online".
+   • Watch: all 3 appear in the other tab, with no duplicates.
+   • Check Prisma Studio: exactly 3 new rows in Messages table.
+
+================================================================================
+
+FINAL CHECKLIST — PARTS 15 AND 16
+================================================================================
+
+Part 15:
+  [ ] Upstash (or other) Redis created. REDIS_URL filled in .env
+  [ ] REDIS_URL added to env.ts Zod schema
+  [ ] npm install redis @socket.io/redis-adapter  done
+  [ ] src/redis/client.ts  created with three clients (main, publisher, subscriber)
+  [ ] connectRedis() called in server.ts before server starts listening
+  [ ] Server logs 3 successful Redis connections at startup
+  [ ] backend/docs/redis-keys.md  created with all key name schemes
+  [ ] src/realtime/handlers/presence.ts  filled in (not the empty placeholder)
+  [ ] src/realtime/handlers/typing.ts    filled in (not the empty placeholder)
+  [ ] registerPresenceHandlers and registerTypingHandlers called in index.ts
+  [ ] ServerEvents.PRESENCE_UPDATE and ServerEvents.TYPING_UPDATE exist in events.ts
+  [ ] TEST: Open tab → online dot appears ✓
+  [ ] TEST: Close tab → offline, lastSeen updates in DB ✓
+  [ ] TEST: Kill server abruptly → users go offline within 60 seconds ✓
+  [ ] TEST: Typing in Tab A → indicator appears in Tab B ✓
+  [ ] TEST: Stop typing (or close laptop) → indicator disappears within 5 seconds ✓
+  [ ] TEST: Refresh page → presence dots are correct immediately (presence:fetch) ✓
+
+Part 16:
+  [ ] src/realtime/handlers/sync.ts  created
+  [ ] registerSyncHandlers called in index.ts
+  [ ] backend/docs/reconnection.md  created with all reconnection rules
+  [ ] TEST: Disconnect for 2 minutes, other tab sends 5 messages,
+            reconnect → exactly 5 messages appear, no duplicates ✓
+  [ ] TEST: Miss 300+ messages → client receives sync:reload and falls back
+            to REST endpoint ✓
+  [ ] TEST: Type 3 messages while offline → exactly 3 appear on reconnect ✓
+  [ ] TEST: Retry a failed message → no duplicate created ✓
+
+================================================================================
+
+WHAT COMES NEXT (PART 17)
+================================================================================
+
+Part 17 = Rate Limiting with Redis
+  • The in-memory rate limiter in src/utils/rateLimiter.ts works for one server
+    instance, but breaks with two instances (like presence used to).
+  • Replace the Map/memory store with Redis INCR + EXPIRE.
+  • The function signature stays the same — only the internals change.
+  • Also apply message-send rate limiting in the message handler (currently
+    there is a TODO comment there).
+
+Part 17 also includes:
+  • Wiring the @socket.io/redis-adapter using the publisher and subscriber
+    clients you already created in Step 15.2. This is what makes socket
+    broadcasts work correctly across two server instances.
+  • Testing with two server instances running side by side.
+
+================================================================================
+END OF PART 15-16 GUIDE
+================================================================================
