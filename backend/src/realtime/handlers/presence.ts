@@ -41,7 +41,9 @@
 
 
 import type { Server, Socket } from "socket.io";
+import { redisClient } from "../../redis/client.js";
 import { prisma } from "../../db/prisma.js";
+import { ServerEvents } from "../events.js";
 
 
 export function registerPresenceHandlers(io:Server, socket:Socket):void{

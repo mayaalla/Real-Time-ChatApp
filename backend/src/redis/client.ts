@@ -50,3 +50,16 @@ function makeClient(label:string){
 export const redisClient     = makeClient("main");
 export const redisPublisher  = makeClient("publisher");
 export const redisSubscriber = makeClient("subscriber");
+
+/**
+ * Call this once at server startup. Connects all three clients to Redis.
+ * Throws if any connection fails, so the server does not start broken.
+ */
+export async function connectRedis(): Promise<void> {
+    await Promise.all([
+      redisClient.connect(),
+      redisPublisher.connect(),
+      redisSubscriber.connect(),
+    ]);
+    console.log("[Redis] All three clients connected successfully.");
+  }

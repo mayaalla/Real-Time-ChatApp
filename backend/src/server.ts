@@ -2,7 +2,7 @@ import http from "node:http";
 import { createApp } from "./app.js";
 import { prisma } from "./db/prisma.js";
 import { initSocketServer } from "./realtime/index.js"; 
-
+import { connectRedis } from "./redis/client.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const ENV = process.env.NODE_ENV ?? "development";
@@ -10,6 +10,8 @@ const ENV = process.env.NODE_ENV ?? "development";
 const app = createApp();
 const server = http.createServer(app);
 initSocketServer(server);  
+
+await connectRedis();
 // Part 12 — Socket.IO gets attached to THIS server, right here.
 
 server.listen(PORT, () => {
