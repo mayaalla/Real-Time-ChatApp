@@ -3,6 +3,8 @@
 // import { env } from "../config/env.js";
 import { socketAuthMiddleware } from "./middleware/socketAuth.js";
 import { registerPresenceHandlers } from "./handlers/presence.js";
+import { registerMessageHandlers } from "./handlers/message.js";
+import { registerReceiptHandlers } from "./handlers/receipts.js";
 // import { registerMessageHandlers }  from "./handlers/message.js";
 // import { registerTypingHandlers }   from "./handlers/typing.js";
 // import { registerReceiptHandlers }  from "./handlers/receipts.js";
@@ -73,9 +75,10 @@ export function initSocketServer(httpServer: HttpServer): Server{
 
 
   io.on("connection", (socket) => {
-    console.log(`New socket connected: ${socket.id}`);
-    registerPresenceHandlers(io, socket);
-    // Step 12.7 will add more handler registrations here
+    registerPresenceHandlers(io, socket);   // ← add this line
+    registerMessageHandlers(io, socket);
+    registerReceiptHandlers(io, socket);
+    // ... other handlers
   });
 
   
