@@ -15,7 +15,7 @@ export function registerReceiptHandlers(io: Server, socket: Socket): void {
 
 
  socket.on("message:delivered",
-  safeHandler<{messageId:string}>(socket, async(playload) =>{
+  safeHandler<{messageId:string}>(socket, async(payload) =>{
           // Step 1: Validate
           const parsed = z.object({ messageId: z.string().uuid() }).safeParse(payload);
           if (!parsed.success) {
@@ -87,7 +87,7 @@ export function registerReceiptHandlers(io: Server, socket: Socket): void {
       .safeParse(payload);
 
     if (!parsed.success) {
-      emitError(socket, "VALIDATION_ERROR", parsed.error.errors[0]?.message ?? "Invalid payload");
+      emitError(socket, "VALIDATION_ERROR", parsed.error.issues[0]?.message ?? "Invalid payload");
       return;
     }
 
