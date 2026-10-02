@@ -1,7 +1,15 @@
 import type { Server, Socket } from "socket.io";
-// Part 15 will fill this in
+import { z } from "zod";
+import { redisClient } from "../../redis/client.js";
+import { isParticipant } from "../../modules/conversations/conversations.service.js";
+import { ClientEvents, ServerEvents } from "../events.js";
+import { safeHandler, emitError } from "./utils.js";
 
-export function registerTypingHandlers(io: Server, socket: Socket): void {
-  // TODO Part 15: handle typing:start, typing:stop
-  console.log("Typing handlers registered (empty for now)");
-}
+
+const typingKey = (conversationId: string, userId: string) =>
+  `typing:${conversationId}:${userId}`;
+
+// Redis "KEYS typing:{conversationId}:*" finds all typers in a conversation.
+const typingPattern = (conversationId: string) => `typing:${conversationId}:*`;
+
+const TYPING_
