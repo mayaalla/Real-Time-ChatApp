@@ -18,6 +18,9 @@ const TYPING_TTL_SECONDS = 5;
 
 export function registerTypingHandlers(io: Server, socket: Socket): void { 
 
+  // typing:start
+
+
   
 
 }
