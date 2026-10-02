@@ -7,6 +7,7 @@ import { registerMessageHandlers } from "./handlers/message.js";
 import { registerReceiptHandlers } from "./handlers/receipts.js";
 // import { registerMessageHandlers }  from "./handlers/message.js";
 import { registerTypingHandlers }   from "./handlers/typing.js";
+import { redisClient } from "../redis/client.js";
 // import { registerReceiptHandlers }  from "./handlers/receipts.js";
 // import { registerSyncHandlers }     from "./handlers/sync.js";
 
