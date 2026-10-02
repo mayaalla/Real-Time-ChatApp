@@ -81,6 +81,37 @@ export function registerPresenceHandlers(io: Server, socket: Socket): void {
     }
   }, PRESENCE_REFRESH_INTERVAL_MS);
 
+  // ── PRESENCE FETCH ───────────────────────────────────────────────────────────
+  // Client emits "presence:fetch" on mount to get an initial snapshot of which
+  // contacts are currently online, rather than waiting for the next broadcast.
+  socket.on("presence:fetch", async () => {
+    try {
+      // Find all conversation partners for this user.
+      const rows = await prisma.participant.findMany({
+        where: {
+          conversation: { participants: { some: { userId } } },
+          userId: { not: userId },
+        },
+        select: { userId: true },
+      });
+
+      const contactIds = [...new Set(rows.map((r) => r.userId))];
+
+      // For each contact, check if they have a presence key in Redis.
+      const presenceList = await Promise.all(
+        contactIds.map(async (contactId) => {
+          const count = await redisClient.sCard(`presence:user:${contactId}`);
+          return { userId: contactId, online: count > 0 };
+        }),
+      );
+
+      // Send the full list back to just THIS socket (not the whole room).
+      socket.emit("presence:snapshot", presenceList);
+    } catch (err) {
+      console.error(`[Presence] presence:fetch error for ${username}:`, err);
+    }
+  });
+
   // ── ON DISCONNECT ────────────────────────────────────────────────────────────
   // This runs when the socket closes (browser tab closed, network lost, etc.)
   socket.on("disconnect", async () => {
