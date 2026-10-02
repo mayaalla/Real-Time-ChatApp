@@ -12,4 +12,13 @@ const typingKey = (conversationId: string, userId: string) =>
 // Redis "KEYS typing:{conversationId}:*" finds all typers in a conversation.
 const typingPattern = (conversationId: string) => `typing:${conversationId}:*`;
 
-const TYPING_
+
+// If client stop typing and sendit typing indicator then delete the key
+const TYPING_TTL_SECONDS = 5;
+
+export function registerTypingHandlers(io: Server, socket: Socket): void { 
+
+  
+
+}
+

@@ -95,7 +95,7 @@ export async function signUploadService(file:SignUploadBody):Promise<SignUploadR
 
    const signature = cloudinary.utils.api_sign_request(
         { timestamp, folder: storagePath, public_id: uniqueId },
-        env.CLOUDINARY_API_SECRET,
+        env.CLOUDINARY_API_SECRET as string,
     );
 
     const uploadUrl = `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/auto/upload`;
@@ -112,7 +112,7 @@ export async function signUploadService(file:SignUploadBody):Promise<SignUploadR
         expiresAt,
         signature,
         timestamp,
-        apiKey:   env.CLOUDINARY_API_KEY,
+        apiKey:   env.CLOUDINARY_API_KEY as string,
         folder:   storagePath,
         publicId: uniqueId,
     };
