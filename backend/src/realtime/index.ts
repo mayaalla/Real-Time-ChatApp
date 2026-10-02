@@ -6,7 +6,7 @@ import { registerPresenceHandlers } from "./handlers/presence.js";
 import { registerMessageHandlers } from "./handlers/message.js";
 import { registerReceiptHandlers } from "./handlers/receipts.js";
 // import { registerMessageHandlers }  from "./handlers/message.js";
-// import { registerTypingHandlers }   from "./handlers/typing.js";
+import { registerTypingHandlers }   from "./handlers/typing.js";
 // import { registerReceiptHandlers }  from "./handlers/receipts.js";
 // import { registerSyncHandlers }     from "./handlers/sync.js";
 
@@ -75,10 +75,10 @@ export function initSocketServer(httpServer: HttpServer): Server{
 
 
   io.on("connection", (socket) => {
-    registerPresenceHandlers(io, socket);   // ← add this line
+    registerPresenceHandlers(io, socket);
+    registerTypingHandlers(io, socket);    // ← add this line
     registerMessageHandlers(io, socket);
     registerReceiptHandlers(io, socket);
-    // ... other handlers
   });
 
   
