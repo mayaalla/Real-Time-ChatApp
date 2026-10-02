@@ -1096,6 +1096,7 @@ socket.on("connect_error", async (err) => {
 
 ──────────────────────────────────────────────────────────────────────────────
 
+
 ✅ DONE WHEN:
    • The file  backend/docs/reconnection.md  exists.
    • You have read and understand all 5 rules.
