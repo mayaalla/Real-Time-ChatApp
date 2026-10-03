@@ -4,26 +4,31 @@ import { env } from "../config/env.js";
 
 
 
+
 function makeClient(label:string){
+    // Fail fast — an empty URL causes silent reconnect loops instead of a clear error.
+    if (!env.REDIS_URL) {
+      throw new Error("REDIS_URL is not set in your .env file. Add a valid Redis connection string.");
+    }
+
     const client = createClient({
-        url:env.REDIS_URL,
+        url: env.REDIS_URL,
         socket: {
-                // TLS is required by hosted Redis providers (Upstash, Redis Cloud, etc.)
-      // If your REDIS_URL starts with "rediss://" this enables TLS automatically.
-      // We still set it explicitly so the intent is clear.
-       //  tls: env.REDIS_URL.startsWith("rediss://"),
+                // TLS is required by hosted Redis providers (Upstash, Redis Cloud, etc.).
+                // The rediss:// scheme enables it automatically; we keep this explicit too.
+        tls: env.REDIS_URL.startsWith("rediss://"),
 
-       connectTimeout: 10000,
-       reconnectStrategy: (retries) =>{
+        connectTimeout: 10000,
+        reconnectStrategy: (retries) =>{
 
-        // Automatically reconnect with increasing delays if the connection drops.
-        if(retries>10){
-            console.error(`[Redis:${label}] Too many reconnect attempts. Giving up.`);
-            return new Error("Redis reconnect limit reached");
-        }
-                // Wait longer each time: 100ms, 200ms, 400ms, 800ms … up to 3 seconds.
-                return Math.min(retries * 100, 3_000);
-       },
+          // Automatically reconnect with increasing delays if the connection drops.
+          if(retries>10){
+              console.error(`[Redis:${label}] Too many reconnect attempts. Giving up.`);
+              return new Error("Redis reconnect limit reached");
+          }
+                  // Wait longer each time: 100ms, 200ms, 400ms, 800ms … up to 3 seconds.
+                  return Math.min(retries * 100, 3_000);
+        },
         },
     });
 
@@ -41,10 +46,8 @@ function makeClient(label:string){
   });
 
   return client;
-
-  
-
 }
+
 
 // Create the three clients (not connected yet — .connect() is called below).
 export const redisClient     = makeClient("main");

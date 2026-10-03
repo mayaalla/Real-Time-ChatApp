@@ -14,6 +14,8 @@ import { prisma } from "../../db/prisma.js";
 import { safeHandler, emitError } from "./utils.js";
 import { z } from "zod";
 
+import { checkSocketRateLimit, MSG_LIMIT, MSG_WINDOW_S } from "../../utils/socketRateLimiter.js";
+
 // the user join a room of convo only if they open a chat, if they open other chat they leave the previous one
 // the nutiifcation for other chats will come only from thier personal room 
 
@@ -97,6 +99,21 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
       }
 
       const { id, conversationId, textBody, attachments } = parsed.data;
+
+            // ── Step 2: Rate limit check ─────────────────────────────────────────────
+      // Import at the top of the file: import { checkSocketRateLimit, MSG_LIMIT, MSG_WINDOW_S } from "../../utils/socketRateLimiter.js";
+
+      const userId: string = socket.data.userId;
+      const rateResult = await checkSocketRateLimit(userId, MSG_LIMIT, MSG_WINDOW_S);
+      if (!rateResult.allowed) {
+        emitError(
+          socket,
+          "TOO_MANY_REQUESTS",
+          `Slow down. You can send ${MSG_LIMIT} messages per ${MSG_WINDOW_S} seconds. ` +
+          `Try again in ${rateResult.retryAfter} second(s).`,
+        );
+        return;
+      }
 
       // ── Step 2: Get the sender's userId from socket.data ───────────────────
       // NEVER use userId from the payload. The client could lie.

@@ -83,11 +83,44 @@ FIRST — GET A REDIS URL (if you do not have one yet)
 
 PUT THE URL IN YOUR .env FILE:
   Open: backend/.env
-  Find the line:   REDIS_URL=
-  Change it to:    REDIS_URL=rediss://default:YOURPASSWORD@yourhost.upstash.io:6379
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !! GOTCHA #1 — DUPLICATE REDIS_URL KEY (most common mistake)             !!
+  !!                                                                         !!
+  !! dotenv reads the FIRST value it finds for a key. If you have:          !!
+  !!   REDIS_URL = ''           ← placeholder/leftover on any earlier line  !!
+  !!   ...                                                                   !!
+  !!   REDIS_URL="rediss://..." ← the real URL lower in the file            !!
+  !!                                                                         !!
+  !! dotenv will use the EMPTY string. The real URL is silently ignored.     !!
+  !! Your server will spam "Socket closed unexpectedly / Reconnecting…"     !!
+  !! until it hits the retry limit and crashes. There is NO other error msg. !!
+  !!                                                                         !!
+  !! FIX: Delete the empty placeholder line. There must be EXACTLY ONE      !!
+  !! REDIS_URL entry in the file, and it must be the real URL.              !!
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !! GOTCHA #2 — WRONG URL SCHEME: redis:// instead of rediss://            !!
+  !!                                                                         !!
+  !! Upstash (and most cloud Redis providers) require TLS on every connect. !!
+  !! Upstash's console sometimes shows both forms. Always use:              !!
+  !!                                                                         !!
+  !!   rediss://   ← CORRECT  (two s = TLS/SSL enabled)                    !!
+  !!   redis://    ← WRONG    (one s = no TLS, server closes socket immediately)
+  !!                                                                         !!
+  !! Using redis:// with Upstash causes the SAME crash as Gotcha #1:        !!
+  !! "Socket closed unexpectedly" → "Reconnecting…" → crash.               !!
+  !! There is no "TLS required" error message — just a closed socket.       !!
+  !!                                                                         !!
+  !! FIX: Make sure your URL starts with  rediss://  (double s).            !!
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  Correct entry (ONE line only, rediss:// double-s):
+    REDIS_URL=rediss://default:YOURPASSWORD@yourhost.upstash.io:6379
 
   Also add REDIS_URL to your env.ts validator so the app validates it on startup.
-  
+
 
 ─────────────────────────────────────────────────────────────────────────────
 ACTION: Open  src/config/env.ts
@@ -96,6 +129,11 @@ ACTION: Open  src/config/env.ts
           REDIS_URL: z.string().url("REDIS_URL must be a valid URL"),
 
         (Put it near the other connection strings like DATABASE_URL.)
+
+  ⚠ WARNING: Do NOT mark REDIS_URL as optional (z.string().optional()).
+    An optional empty string will NOT be caught at startup — the server will
+    start, then crash later with the mysterious reconnect loop from Gotcha #1.
+    Make it required so the app fails fast with a clear message.
 ─────────────────────────────────────────────────────────────────────────────
 
 INSTALL THE PACKAGES:
@@ -135,12 +173,19 @@ import { env } from "../config/env.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 function makeClient(label: string) {
+  // ⚠ FAIL FAST: If REDIS_URL is missing or empty, throw immediately.
+  // An empty URL causes a silent reconnect loop (not a clear error) — see GOTCHA #1 above.
+  if (!env.REDIS_URL) {
+    throw new Error("REDIS_URL is not set. Add a valid rediss:// URL to your .env file.");
+  }
+
   const client = createClient({
     url: env.REDIS_URL,
     socket: {
       // TLS is required by hosted Redis providers (Upstash, Redis Cloud, etc.)
-      // If your REDIS_URL starts with "rediss://" this enables TLS automatically.
-      // We still set it explicitly so the intent is clear.
+      // The rediss:// scheme enables it automatically; we set it explicitly too.
+      // ⚠ If your URL starts with redis:// (one s), this will be false and
+      //   Upstash will close the socket immediately — see GOTCHA #2 above.
       tls: env.REDIS_URL.startsWith("rediss://"),
 
       // How long to wait before giving up on a connection attempt.
