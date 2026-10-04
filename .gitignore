@@ -4,3 +4,6 @@ dist/
 .env.*
 !.env.example
 *.log
+# AI agent folders
+.agents/
+.claude/
