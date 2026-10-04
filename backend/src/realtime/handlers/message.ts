@@ -14,7 +14,7 @@ import { prisma } from "../../db/prisma.js";
 import { safeHandler, emitError } from "./utils.js";
 import { z } from "zod";
 
-import { checkSocketRateLimit, MSG_LIMIT, MSG_WINDOW_S } from "../../utils/socketRateLimiter.js";
+import { checkSocketRateLimit, MSG_LIMIT, MSG_WINDOW_S, NOISE_LIMIT, NOISE_WINDOW_S} from "../../utils/socketRateLimiter.js";
 
 // the user join a room of convo only if they open a chat, if they open other chat they leave the previous one
 // the nutiifcation for other chats will come only from thier personal room 
@@ -36,6 +36,13 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
     const { conversationId } = parsed.data;
 
     // get the userid from the socket.data
+     // Rate-limit join requests (a script could rapidly join and leave rooms).
+     const rateResult = await checkSocketRateLimit(socket.data.userId, NOISE_LIMIT, NOISE_WINDOW_S);
+     if (!rateResult.allowed) {
+       emitError(socket, "TOO_MANY_REQUESTS", "Too many join requests. Slow down.");
+       return;
+     }
+
 
     const userId : string = socket.data.userId;
 

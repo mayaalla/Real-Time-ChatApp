@@ -5,6 +5,7 @@ import { redisClient } from "../../redis/client.js";
 import { isParticipant } from "../../modules/conversations/conversations.service.js";
 import { ClientEvents, ServerEvents } from "../events.js";
 import { safeHandler, emitError } from "./utils.js";
+import { checkSocketRateLimit, NOISE_LIMIT, NOISE_WINDOW_S } from "../../utils/socketRateLimiter.js";
 
 // ─── KEY HELPERS ──────────────────────────────────────────────────────────────
 
@@ -41,8 +42,16 @@ export function registerTypingHandlers(io: Server, socket: Socket): void {
         return;
       }
 
+      // Rate-limit typing events — they are cheap but can be spammed.
+      const rateResult = await checkSocketRateLimit(socket.data.userId, NOISE_LIMIT, NOISE_WINDOW_S);
+      if (!rateResult.allowed) {
+        // Silently ignore — do not emit an error for typing spam.
+        // A real user will never hit this; a script will be silently throttled.
+        return;
+      }
       const { conversationId } = parsed.data;
       const userId: string = socket.data.userId;
+
 
       // Check membership — a non-member should not be able to fake a typing indicator.
       const member = await isParticipant(userId, conversationId);

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../db/prisma.js";
 import { isParticipant } from "../../modules/conversations/conversations.service.js";
 import { safeHandler, emitError } from "./utils.js";
+import { checkSocketRateLimit, NOISE_LIMIT, NOISE_WINDOW_S } from "../../utils/socketRateLimiter.js";
 
 // max of messages will be load if the connction gone and back
 const  MAX_SYNC_MESSAGES = 200;
@@ -25,6 +26,12 @@ export function registerSyncHandlers(io: Server, socket: Socket): void {
       emitError(socket, "VALIDATION_ERROR", parsed.error.issues[0]?.message ?? "Invalid payload");
       return;
     }
+
+    const rateResult = await checkSocketRateLimit(socket.data.userId, NOISE_LIMIT, NOISE_WINDOW_S);
+      if (!rateResult.allowed) {
+        emitError(socket, "TOO_MANY_REQUESTS", "Too many sync requests. Slow down.");
+        return;
+      }
 
     const {conversationId, since} = parsed.data
     const userId: string = socket.data.userId
