@@ -65,7 +65,7 @@ import usersRouter from "./modules/users/users.routes.js";
 import uploadsRouter from "./modules/uploads/uploads.routes.js";
 import messagesRouter from "./modules/messages/messages.routes.js";
 import conversationsRouter from "./modules/conversations/conversations.routes.js";
-
+import rateLimit from "express-rate-limit";
 
 // ─────────────────────────────────────────────────────────────
 // 🧩 INTERFACE: HttpError
@@ -161,6 +161,23 @@ export function createApp(): Application {
   //                responses get the security headers. 🪖
   app.use(helmet());
 
+  // ── General API rate limit ────────────────────────────────────────────────
+  // 100 requests per minute per IP. This applies to ALL /api/* routes.
+  // Auth routes have their own stricter limits on top of this.
+  const generalApiLimiter = rateLimit({
+    windowMs:         60 * 1000,        // 1 minute window
+    max:              100,              // max 100 requests per window per IP
+    standardHeaders:  true,             // sends RateLimit-* headers in the response
+    legacyHeaders:    false,            // turns off the older X-RateLimit-* headers
+    message: {
+      ok:      false,
+      code:    "TOO_MANY_REQUESTS",
+      message: "Too many requests. Please slow down and try again in a minute.",
+    },
+  });
+
+  // Apply the general limiter to all /api routes.
+  app.use("/api", generalApiLimiter);
 
 
   // ⚠️ REMOVED: duplicate express.json() that overrode the 100kb limit above.
