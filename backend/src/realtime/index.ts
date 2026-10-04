@@ -83,6 +83,8 @@ export function initSocketServer(httpServer: HttpServer): Server{
 
 
   io.on("connection", (socket) => {
+    const instanceName = process.env.INSTANCE_NAME ?? "instance-1";
+  console.log(`[${instanceName}] ${socket.data.username} connected [${socket.id}]`);
     registerPresenceHandlers(io, socket);
     registerTypingHandlers(io, socket);    // ← add this line
     registerMessageHandlers(io, socket);
