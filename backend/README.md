@@ -298,7 +298,7 @@ All event names are constants in `events.ts`. No raw strings in handlers.
 ---
 
 ### Full architactur of the backend :
-[![Architecture diagram](https://gitdiagram.com/diagram-badge.svg)](https://gitdiagram.com/mayaalla/real-time-chatapp?utm_source=readme&utm_medium=badge)
+[![Architecture diagram of mayaalla/real-time-chatapp](https://gitdiagram.com/mayaalla/real-time-chatapp/diagram.png)](https://gitdiagram.com/mayaalla/real-time-chatapp?utm_source=readme&utm_medium=picture)
 
 ## Running it locally
 
