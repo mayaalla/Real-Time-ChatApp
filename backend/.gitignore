@@ -1,4 +1,23 @@
+# Environment & secrets
+.env
+.env.*
 .neon
+
+# Dependencies
 node_modules/
 
+# Generated files
 /src/generated/prisma
+dist/
+
+# IDE & editor config
+.vscode/
+.windsurf/
+.idea/
+
+# Personal helper / AI context files
+context.txt
+context_upload_files.txt
+todo.txt
+skills-lock.json
+part*.txt
