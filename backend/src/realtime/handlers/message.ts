@@ -91,7 +91,7 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
         .object({
           id:             z.string().uuid("id must be a valid UUID"),
           conversationId: z.string().uuid("conversationId must be a valid UUID"),
-          textBody:       z.string().trim().min(1).optional(),
+          textBody: z.string().trim().min(1).max(2000, "Message cannot exceed 2000 characters").optional(),
           attachments:    z.array(z.string().min(1)).optional(),
         })
         .refine(
