@@ -10,6 +10,9 @@ node_modules/
 /src/generated/prisma
 dist/
 
+# Personal notes & architecture docs
+docs/
+
 # IDE & editor config
 .vscode/
 .windsurf/
