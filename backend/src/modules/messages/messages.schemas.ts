@@ -180,6 +180,7 @@ export const SendMessageBodySchema = z
       .string()
       .trim()
       .min(1, "textBody cannot be empty")
+      .max(2000, "Message cannot exceed 2000 characters")
       .optional(),
 
     attachments: z
