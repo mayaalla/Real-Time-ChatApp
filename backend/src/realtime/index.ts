@@ -9,8 +9,9 @@ import { registerReceiptHandlers } from "./handlers/receipts.js";
 import { registerTypingHandlers }   from "./handlers/typing.js";
 import { redisClient } from "../redis/client.js";
 // import { registerReceiptHandlers }  from "./handlers/receipts.js";
-// import { registerSyncHandlers }     from "./handlers/sync.js";
-
+import { registerSyncHandlers }     from "./handlers/sync.js";
+import { createAdapter } from "@socket.io/redis-adapter";
+import { redisPublisher, redisSubscriber } from "../redis/client.js";
 // let io: Server;
 
 // export function initSocketServer(httpServer: HttpServer): Server {
@@ -70,8 +71,14 @@ export function initSocketServer(httpServer: HttpServer): Server{
     pingInterval: 10_000,
     pingTimeout: 5_000,
   })
+  
+
+  // redis adapter
+  io.adapter(createAdapter(redisPublisher, redisSubscriber));
+  console.log("[Socket.IO] Redis adapter attached.");
 
   console.log("Socket.IO server created");
+
   io.use(socketAuthMiddleware);
 
 
@@ -80,6 +87,7 @@ export function initSocketServer(httpServer: HttpServer): Server{
     registerTypingHandlers(io, socket);    // ← add this line
     registerMessageHandlers(io, socket);
     registerReceiptHandlers(io, socket);
+    registerSyncHandlers(io, socket);
   });
 
   

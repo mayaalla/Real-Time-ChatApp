@@ -14,8 +14,10 @@ initSocketServer(server);
 await connectRedis();
 // Part 12 — Socket.IO gets attached to THIS server, right here.
 
+const INSTANCE = process.env.INSTANCE_NAME ?? "instance-1";
+
 server.listen(PORT, () => {
-  console.log(`chat-server listening on http://localhost:${PORT} [${ENV}]`);
+  console.log(`[${INSTANCE}] chat-server listening on http://localhost:${PORT} [${ENV}]`);
 });
 
 let shuttingDown = false;
