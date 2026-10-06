@@ -36,7 +36,7 @@ export function LoginPage() {
       setSession(user, accessToken);
 
       // Navigate to the chat. Replace so the user can't press Back to come here.
-      navigate("/chat", { replace: true });
+      navigate("/", { replace: true });
 
     } catch (err: unknown) {
       // The server sent back an error (wrong password, user not found, etc.)
