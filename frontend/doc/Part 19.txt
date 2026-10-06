@@ -1,0 +1,479 @@
+
+╔══════════════════════════════════════════════════════════════════╗
+║          PART 19 — HTTP CLIENT & REACT QUERY SETUP              ║
+║          Steps 19.5 and 19.6 — Easy Guide                       ║
+╚══════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔑 IMPORTANT WORDS TO KNOW FIRST (Dictionary)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌─────────────────────┬─────────────────────────────────────────────────────┐
+│ Word                │ What it means in simple English                     │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ axios               │ A library that lets your React app talk to the      │
+│                     │ backend server (send/receive data).                  │
+│                     │ Think of it as a "messenger" between front and back. │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ HTTP client         │ The tool your app uses to make network requests      │
+│                     │ (GET, POST, etc.) to your API.                       │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ Access Token        │ A short-lived password (usually expires in 15 min)   │
+│                     │ that proves you are logged in.                       │
+│                     │ Sent in every request header.                        │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ Refresh Token       │ A long-lived secret stored in a cookie.              │
+│                     │ Used ONLY to get a new Access Token when the old     │
+│                     │ one expires. User never sees it.                     │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ Interceptor         │ A "middle-man" function that runs automatically      │
+│                     │ before every request is SENT or after every          │
+│                     │ response is RECEIVED.                                │
+│                     │ Like a customs officer who checks every package.     │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ Outgoing            │ Requests LEAVING your app going TO the server.       │
+│ Interceptor         │ Example: attach the access token to every request.   │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ Incoming            │ Responses ARRIVING from the server TO your app.      │
+│ Interceptor         │ Example: detect a "401 token expired" error.         │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ 401 Unauthorized    │ The server's way of saying "I don't know who you     │
+│                     │ are" or "your token expired, go refresh it".         │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ withCredentials     │ An axios setting that tells the browser:             │
+│                     │ "Send cookies too!" - needed so the refresh token    │
+│                     │ cookie is included in requests.                      │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ React Query         │ A library that manages server data in React.         │
+│ (TanStack Query)    │ It fetches, caches, and refreshes data for you       │
+│                     │ without you having to manage loading/error state.    │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ Query Key           │ A unique name/label you give to each piece of data.  │
+│                     │ Like a folder label. React Query uses it to find,    │
+│                     │ cache, and update that data.                         │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ QueryClient         │ The brain of React Query. It stores all cached data  │
+│                     │ and settings. There is ONE per app.                  │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ QueryClientProvider │ A React wrapper component that gives ALL your        │
+│                     │ components access to the QueryClient.                │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ staleTime           │ How long React Query considers data "fresh".         │
+│                     │ During this time it will NOT re-fetch it.            │
+│                     │ Like milk: fresh for X minutes, then check again.    │
+├─────────────────────┼─────────────────────────────────────────────────────┤
+│ refetchOnWindow     │ Should React Query re-fetch data when you switch     │
+│ Focus               │ browser tabs and come back? We set this to FALSE     │
+│                     │ for message history (too much noise).                │
+└─────────────────────┴─────────────────────────────────────────────────────┘
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 19.5 - CREATE THE HTTP CLIENT (axios)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GOAL:
+  Every request your app makes should automatically:
+    1. Know the backend address (baseURL)
+    2. Carry the access token in the header
+    3. If the token expired - silently refresh it and retry
+    4. If refresh fails - log the user out
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INSTALL AXIOS (if not already installed)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Run this in your terminal inside the frontend folder:
+
+    npm install axios
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CREATE FILE:  frontend/src/api/axiosClient.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Go to:   frontend/src/api/
+  Create:  axiosClient.ts
+  Paste this code:
+
+─────────────────────────────────────────────────────────────────────
+import axios from 'axios';
+
+// 1. CREATE THE AXIOS INSTANCE
+//
+// Think of this as creating YOUR OWN version of axios,
+// pre-configured so you don't repeat settings everywhere.
+//
+const api = axios.create({
+  baseURL: import.meta.env.VITE_API_URL, // e.g. "http://localhost:5000/api"
+  withCredentials: true,                  // send the refresh cookie automatically
+});
+
+// 2. OUTGOING INTERCEPTOR (Request)
+//
+// This runs BEFORE every request leaves your app.
+// Job: "Put the access token in the Authorization header."
+//
+api.interceptors.request.use((config) => {
+  // Get the access token from wherever you store it
+  // (e.g., Zustand store, localStorage, memory variable)
+  const token = getAccessToken(); // you will fill this in from your auth store
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+
+  return config; // continue sending the request
+});
+
+// 3. ONE-AT-A-TIME REFRESH LOGIC
+//
+// Problem: if 5 requests all fail at once (token expired),
+//          we don't want 5 refresh calls - just ONE.
+//
+// Solution: use a "lock" variable.
+//
+let isRefreshing = false;          // is a refresh already in progress?
+let waitingQueue: Array<{          // requests waiting for the refresh to finish
+  resolve: (token: string) => void;
+  reject: (error: unknown) => void;
+}> = [];
+
+// Helper: resolve or reject all waiting requests
+function processQueue(error: unknown, token: string | null) {
+  waitingQueue.forEach((prom) => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(token!);
+    }
+  });
+  waitingQueue = [];
+}
+
+// 4. INCOMING INTERCEPTOR (Response)
+//
+// This runs AFTER every response arrives.
+// Job: "If the server said 401 (token expired), refresh and retry."
+//
+api.interceptors.response.use(
+  (response) => response, // if response is OK, just pass it through
+
+  async (error) => {
+    const originalRequest = error.config;
+
+    // Only handle 401 errors that we haven't already retried
+    const isExpired =
+      error.response?.status === 401 &&
+      !originalRequest._retry; // _retry is our custom flag to avoid infinite loop
+
+    if (!isExpired) {
+      return Promise.reject(error); // some other error, don't handle it here
+    }
+
+    // Mark this request so we don't retry it again if refresh also fails
+    originalRequest._retry = true;
+
+    // Case A: a refresh is ALREADY in progress
+    if (isRefreshing) {
+      // Wait in line, and retry when refresh is done
+      return new Promise((resolve, reject) => {
+        waitingQueue.push({
+          resolve: (newToken) => {
+            originalRequest.headers.Authorization = `Bearer ${newToken}`;
+            resolve(api(originalRequest));
+          },
+          reject,
+        });
+      });
+    }
+
+    // Case B: WE are the first to need a refresh
+    isRefreshing = true;
+
+    try {
+      // Call the refresh endpoint - the cookie is sent automatically
+      const { data } = await axios.post(
+        `${import.meta.env.VITE_API_URL}/auth/refresh`,
+        {},
+        { withCredentials: true }
+      );
+
+      const newToken = data.accessToken;
+
+      // Save the new access token (replace with your actual store setter)
+      setAccessToken(newToken); // you will fill this in from your auth store
+
+      // Tell all waiting requests: "here is the new token, retry now"
+      processQueue(null, newToken);
+
+      // Retry the original request with the new token
+      originalRequest.headers.Authorization = `Bearer ${newToken}`;
+      return api(originalRequest);
+
+    } catch (refreshError) {
+      // Refresh failed - the refresh token is also expired or invalid
+      processQueue(refreshError, null);
+
+      // Log the user out (replace with your actual logout action)
+      logoutUser(); // you will fill this in from your auth store
+
+      return Promise.reject(refreshError);
+
+    } finally {
+      isRefreshing = false; // unlock so future requests can refresh again
+    }
+  }
+);
+
+export default api;
+─────────────────────────────────────────────────────────────────────
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW IT ALL FLOWS - Simple Story
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Normal request:
+    App -> [outgoing interceptor adds token] -> Server -> Response OK
+
+  Token expired (1 request):
+    App -> Server -> 401 expired
+    -> [incoming interceptor catches it]
+    -> calls /auth/refresh with cookie
+    -> gets new token
+    -> retries original request -> Response OK
+
+  Token expired (5 requests at the same time):
+    Request 1 -> 401 -> starts refresh (isRefreshing = true)
+    Requests 2-5 -> 401 -> see isRefreshing = true -> join the queue
+    Refresh finishes -> new token distributed to all 5 -> all retry OK
+
+  Refresh token also expired:
+    -> processQueue(error) -> all fail
+    -> logoutUser() is called -> user is sent to login page
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO KNOW STEP 19.5 IS DONE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  - Leave the app open for longer than the access token lifetime (e.g., 15 min)
+  - Click something (send a message, load conversations)
+  - It should work WITHOUT asking you to log in again
+  - In the browser Network tab, you should see:
+      1. A request that got a 401
+      2. A POST to /auth/refresh
+      3. The original request retried and succeeded
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 19.6 - SET UP REACT QUERY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GOAL:
+  Use React Query to fetch and cache server data smartly.
+  Every component can ask for data by name (query key),
+  and React Query handles loading, caching, and refreshing.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INSTALL REACT QUERY (if not already installed)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Run this in your terminal inside the frontend folder:
+
+    npm install @tanstack/react-query
+    npm install @tanstack/react-query-devtools   <- this is for the developer panel
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP A - CREATE FILE:  frontend/src/lib/queryClient.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Go to:   frontend/src/lib/
+  Create:  queryClient.ts
+  Paste this code:
+
+─────────────────────────────────────────────────────────────────────
+import { QueryClient } from '@tanstack/react-query';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Don't refetch every time you switch browser tabs.
+      // For a chat app, this would cause unnecessary noise.
+      refetchOnWindowFocus: false,
+
+      // If a request fails, try ONE more time before showing an error.
+      retry: 1,
+
+      // Consider data "fresh" for 1 minute.
+      // During this time, React Query will NOT re-fetch it.
+      // After 1 min, if you visit the page again, it re-fetches in background.
+      staleTime: 1000 * 60, // 60 seconds
+    },
+  },
+});
+
+export default queryClient;
+─────────────────────────────────────────────────────────────────────
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP B - CREATE FILE:  frontend/src/lib/queryKeys.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Go to:   frontend/src/lib/
+  Create:  queryKeys.ts
+  Paste this code:
+
+─────────────────────────────────────────────────────────────────────
+// QUERY KEY NAMING SCHEME
+//
+// Query keys are labels React Query uses to identify cached data.
+// Think of them like folder names:
+//   ["conversations"]          -> the full list of conversations
+//   ["conversation", "abc123"] -> one specific conversation
+//   ["messages", "abc123"]     -> messages inside conversation "abc123"
+//
+// Rules we follow:
+//   1. Always start with a general category string (e.g. "conversations")
+//   2. Add an ID for specific items (e.g. "abc123")
+//   3. Keep them in ONE place (this file) so there are no typos
+
+export const queryKeys = {
+  // All conversations for the logged-in user
+  conversations: () => ['conversations'] as const,
+
+  // One specific conversation by its ID
+  conversation: (id: string) => ['conversation', id] as const,
+
+  // All messages inside a specific conversation
+  messages: (conversationId: string) => ['messages', conversationId] as const,
+};
+
+// HOW TO USE:
+//
+// In a query:
+//   useQuery({ queryKey: queryKeys.conversations(), queryFn: ... })
+//
+// To invalidate (force re-fetch) after sending a message:
+//   queryClient.invalidateQueries({ queryKey: queryKeys.messages(convId) })
+─────────────────────────────────────────────────────────────────────
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP C - EDIT FILE:  frontend/src/main.tsx
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Open your existing: frontend/src/main.tsx
+  Wrap your app in QueryClientProvider.
+
+  Your file should look like this:
+
+─────────────────────────────────────────────────────────────────────
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import App from './App';
+import queryClient from './lib/queryClient';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+
+    {/* QueryClientProvider gives ALL components access to React Query */}
+    <QueryClientProvider client={queryClient}>
+
+      <App />
+
+      {/* DevTools: shows queries by name in a floating panel (dev only) */}
+      <ReactQueryDevtools initialIsOpen={false} />
+
+    </QueryClientProvider>
+
+  </React.StrictMode>
+);
+─────────────────────────────────────────────────────────────────────
+
+  NOTE: ReactQueryDevtools only shows in development mode.
+        It is automatically removed in production builds.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW REACT QUERY WORKS - Simple Story
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  WITHOUT React Query:
+    Component -> useEffect -> fetch -> setState(data)
+    You manually manage: loading, error, caching, re-fetching...
+
+  WITH React Query:
+    Component -> useQuery({ queryKey: ..., queryFn: ... })
+    React Query gives you back: { data, isLoading, error }
+    AND it caches, re-fetches, deduplicates automatically!
+
+  Real example:
+    // In a ConversationList component:
+    const { data: conversations, isLoading } = useQuery({
+      queryKey: queryKeys.conversations(),     // ["conversations"]
+      queryFn: () => api.get('/conversations'),
+    });
+
+    // In a MessageList component for conversation "abc123":
+    const { data: messages } = useQuery({
+      queryKey: queryKeys.messages('abc123'),  // ["messages", "abc123"]
+      queryFn: () => api.get('/conversations/abc123/messages'),
+    });
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUR QUERY KEY SCHEME (Written Down)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Data                                  Query Key
+  ------------------------------------  ----------------------------
+  All conversations                     ["conversations"]
+  One conversation (id = "abc123")      ["conversation", "abc123"]
+  Messages of conversation "abc123"     ["messages", "abc123"]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO KNOW STEP 19.6 IS DONE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Run your app: npm run dev
+  2. Open the browser
+  3. You should see a small flower icon in the bottom-right corner
+     - that is the React Query DevTools panel
+  4. Click it - it opens a panel showing your queries BY NAME:
+       - "conversations"
+       - "conversation" -> "abc123"
+       - "messages" -> "abc123"
+  5. If you can see named queries in the panel -> Done!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FINAL FILE STRUCTURE AFTER BOTH STEPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  frontend/src/
+  +-- api/
+  |   +-- axiosClient.ts      <- Step 19.5 (the HTTP client)
+  +-- lib/
+  |   +-- queryClient.ts      <- Step 19.6 (React Query settings)
+  |   +-- queryKeys.ts        <- Step 19.6 (our query key names)
+  +-- main.tsx                <- Step 19.6 (wrap app in QueryClientProvider)
+  +-- ...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+QUICK CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Step 19.5 (axios):
+    [ ] npm install axios
+    [ ] Created frontend/src/api/axiosClient.ts
+    [ ] baseURL points to VITE_API_URL
+    [ ] withCredentials: true is set
+    [ ] Outgoing interceptor attaches access token
+    [ ] Incoming interceptor handles 401 and refreshes token
+    [ ] Queue prevents multiple simultaneous refreshes
+    [ ] Failed refresh calls logoutUser()
+
+  Step 19.6 (React Query):
+    [ ] npm install @tanstack/react-query @tanstack/react-query-devtools
+    [ ] Created frontend/src/lib/queryClient.ts with sensible defaults
+    [ ] Created frontend/src/lib/queryKeys.ts with our naming scheme
+    [ ] Wrapped App in QueryClientProvider in main.tsx
+    [ ] ReactQueryDevtools added inside the provider
+    [ ] DevTools panel shows queries by name in the browser - Done!
