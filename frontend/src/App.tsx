@@ -1,23 +1,16 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useAuthStore }      from "./store/authStore";
-import { useSessionRestore } from "./hooks/useSessionRestore";
-import { LoadingScreen }     from "./components/LoadingScreen";
-import { PrivateRoute }      from "./components/PrivateRoute";
-import { PublicOnlyRoute }   from "./components/PublicOnlyRoute";
-import { LoginPage }         from "./pages/LoginPage";
-import { RegisterPage }      from "./pages/RegisterPage";
-import { useLogout } from "./hooks/useLogout";
+import { useAuthStore }       from "./store/authStore";
+import { useSessionRestore }  from "./hooks/useSessionRestore";
+import { useLogout }          from "./hooks/useLogout";
+import { LoadingScreen }      from "./components/LoadingScreen";
+import { PrivateRoute }       from "./components/PrivateRoute";
+import { PublicOnlyRoute }    from "./components/PublicOnlyRoute";
+import { ChatShell }          from "./layouts/ChatShell";
+import { EmptyState }         from "./components/EmptyState";
+import { LoginPage }          from "./pages/LoginPage";
+import { RegisterPage }       from "./pages/RegisterPage";
+import { NotFoundPage }       from "./pages/NotFoundPage";
 import './App.css'
-
-function ChatPage() {
-  const { logout } = useLogout();
-  return (
-    <div>
-      <h1>Chat (you are logged in!)</h1>
-      <button onClick={logout}>Log out</button>
-    </div>
-  );
-}
 
 export default function App() {
   // Attempt session restore on EVERY page load (reads the refresh cookie).
@@ -45,13 +38,16 @@ export default function App() {
         {/* ── Private routes (require login) ─────────────────────────────── */}
         {/* If you are NOT logged in, these redirect you to /login.           */}
         <Route element={<PrivateRoute />}>
-          <Route path="/chat" element={<ChatPage />} />
+          <Route element={<ChatShell />}>
+            <Route path="/"       element={<EmptyState />} />
+            <Route path="/c/:conversationId" element={<EmptyState />} />
+          </Route>
           {/* Add more private routes here as you build them */}
         </Route>
 
         {/* ── Root redirect ──────────────────────────────────────────────── */}
         {/* Typing just "/" goes to /chat (which may redirect to /login).     */}
-        <Route path="/" element={<Navigate to="/chat" replace />} />
+        <Route path="/chat" element={<Navigate to="/" replace />} />
 
         {/* ── 404 fallback ───────────────────────────────────────────────── */}
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -60,4 +56,3 @@ export default function App() {
     </BrowserRouter>
   );
 }
-
