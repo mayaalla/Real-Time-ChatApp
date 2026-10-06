@@ -1,0 +1,1 @@
+npm install shadcn class-variance-authority cn lucide-react tw-animate-css

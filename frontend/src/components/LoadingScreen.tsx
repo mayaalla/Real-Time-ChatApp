@@ -7,18 +7,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function LoadingScreen() {
-    return (
-      <div
-        style={{
-          display:        "flex",
-          justifyContent: "center",
-          alignItems:     "center",
-          height:         "100vh",
-          fontSize:       "1.2rem",
-          color:          "#888",
-        }}
-      >
-        Loading…
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background">
+      <div className="flex flex-col items-center gap-4">
+        {/* Spinner ring */}
+        <span className="size-10 rounded-full border-4 border-border border-t-primary animate-spin" />
+        <p className="text-sm text-muted-foreground tracking-wide">Loading…</p>
       </div>
-    );
-  }
+    </div>
+  );
+}

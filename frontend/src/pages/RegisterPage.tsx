@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate, Link }   from "react-router-dom";
-import { registerUser }        from "../api/auth.api";
-import { useAuthStore }        from "../store/authStore";
+import { useNavigate, Link }        from "react-router-dom";
+import { registerUser }             from "../api/auth.api";
+import { useAuthStore }             from "../store/authStore";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
@@ -87,94 +87,132 @@ export function RegisterPage() {
   };
 
   // ── Render ──────────────────────────────────────────────────────────────────
+
+  // Shared Tailwind classes for inputs — defined once to stay DRY
+  const inputCls =
+    "w-full rounded-[var(--radius-md)] border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none ring-offset-background transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
+
   return (
-    <div style={{ maxWidth: 400, margin: "80px auto", padding: 24 }}>
-      <h1>Create account</h1>
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
+      <div className="w-full max-w-sm">
 
-      <form onSubmit={handleSubmit}>
+        {/* Card */}
+        <div className="rounded-[var(--radius)] border border-border bg-card shadow-md p-8 space-y-6">
 
-        {/* Email */}
-        <div style={{ marginBottom: 16 }}>
-          <label htmlFor="email">Email</label>
-          <br />
-          <input
-            id="email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoFocus
-            style={{ width: "100%", padding: 8, marginTop: 4 }}
-          />
-        </div>
-
-        {/* Username */}
-        <div style={{ marginBottom: 16 }}>
-          <label htmlFor="username">Username (3–20 characters)</label>
-          <br />
-          <input
-            id="username"
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-            minLength={3}
-            maxLength={20}
-            style={{ width: "100%", padding: 8, marginTop: 4 }}
-          />
-        </div>
-
-        {/* Password */}
-        <div style={{ marginBottom: 16 }}>
-          <label htmlFor="password">Password (minimum 8 characters)</label>
-          <br />
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={8}
-            style={{ width: "100%", padding: 8, marginTop: 4 }}
-          />
-        </div>
-
-        {/* Confirm password */}
-        <div style={{ marginBottom: 16 }}>
-          <label htmlFor="confirm">Confirm password</label>
-          <br />
-          <input
-            id="confirm"
-            type="password"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            required
-            style={{ width: "100%", padding: 8, marginTop: 4 }}
-          />
-        </div>
-
-        {/* Error area */}
-        {error && (
-          <div style={{ color: "red", marginBottom: 16 }}>
-            {error}
+          {/* Header */}
+          <div className="space-y-1 text-center">
+            <h1 className="text-2xl font-semibold tracking-tight text-card-foreground">
+              Create an account
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Fill in the details below to get started
+            </p>
           </div>
-        )}
 
-        {/* Submit button */}
-        <button
-          type="submit"
-          disabled={busy}
-          style={{ width: "100%", padding: 10 }}
-        >
-          {busy ? "Creating account…" : "Create account"}
-        </button>
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="space-y-4">
 
-      </form>
+            {/* Email */}
+            <div className="space-y-1.5">
+              <label htmlFor="email" className="text-sm font-medium text-foreground">
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+                placeholder="you@example.com"
+                className={inputCls}
+              />
+            </div>
 
-      {/* Link back to login */}
-      <p style={{ marginTop: 16 }}>
-        Already have an account? <Link to="/login">Log in</Link>
-      </p>
+            {/* Username */}
+            <div className="space-y-1.5">
+              <label htmlFor="username" className="text-sm font-medium text-foreground">
+                Username{" "}
+                <span className="text-muted-foreground font-normal">(3–20 characters)</span>
+              </label>
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+                minLength={3}
+                maxLength={20}
+                placeholder="your_handle"
+                className={inputCls}
+              />
+            </div>
+
+            {/* Password */}
+            <div className="space-y-1.5">
+              <label htmlFor="password" className="text-sm font-medium text-foreground">
+                Password{" "}
+                <span className="text-muted-foreground font-normal">(min. 8 characters)</span>
+              </label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+                placeholder="••••••••"
+                className={inputCls}
+              />
+            </div>
+
+            {/* Confirm password */}
+            <div className="space-y-1.5">
+              <label htmlFor="confirm" className="text-sm font-medium text-foreground">
+                Confirm password
+              </label>
+              <input
+                id="confirm"
+                type="password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                required
+                placeholder="••••••••"
+                className={inputCls}
+              />
+            </div>
+
+            {/* Error area */}
+            {error && (
+              <div className="rounded-[var(--radius-sm)] bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+
+            {/* Submit button */}
+            <button
+              type="submit"
+              disabled={busy}
+              className="w-full rounded-[var(--radius-md)] bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {busy ? "Creating account…" : "Create account"}
+            </button>
+
+          </form>
+
+          {/* Link back to login */}
+          <p className="text-center text-sm text-muted-foreground">
+            Already have an account?{" "}
+            <Link
+              to="/login"
+              className="font-medium text-foreground underline-offset-4 hover:underline"
+            >
+              Log in
+            </Link>
+          </p>
+
+        </div>
+      </div>
     </div>
   );
 }

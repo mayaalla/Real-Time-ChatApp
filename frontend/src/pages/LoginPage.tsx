@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate, Link }   from "react-router-dom";
-import { loginUser }           from "../api/auth.api";
-import { useAuthStore }        from "../store/authStore";
+import { useNavigate, Link }        from "react-router-dom";
+import { loginUser }                from "../api/auth.api";
+import { useAuthStore }             from "../store/authStore";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
@@ -48,62 +48,95 @@ export function LoginPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div style={{ maxWidth: 400, margin: "80px auto", padding: 24 }}>
-      <h1>Log in</h1>
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="w-full max-w-sm">
 
-      <form onSubmit={handleSubmit}>
+        {/* Card */}
+        <div className="rounded-[var(--radius)] border border-border bg-card shadow-md p-8 space-y-6">
 
-        {/* Email or username */}
-        <div style={{ marginBottom: 16 }}>
-          <label htmlFor="email">Email or username</label>
-          <br />
-          <input
-            id="email"
-            type="text"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoFocus
-            style={{ width: "100%", padding: 8, marginTop: 4 }}
-          />
-        </div>
-
-        {/* Password */}
-        <div style={{ marginBottom: 16 }}>
-          <label htmlFor="password">Password</label>
-          <br />
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            style={{ width: "100%", padding: 8, marginTop: 4 }}
-          />
-        </div>
-
-        {/* Error area — only shown when there is an error */}
-        {error && (
-          <div style={{ color: "red", marginBottom: 16 }}>
-            {error}
+          {/* Header */}
+          <div className="space-y-1 text-center">
+            <h1 className="text-2xl font-semibold tracking-tight text-card-foreground">
+              Welcome back
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Enter your credentials to continue
+            </p>
           </div>
-        )}
 
-        {/* Submit button — shows a busy message while the request is in flight */}
-        <button
-          type="submit"
-          disabled={busy}
-          style={{ width: "100%", padding: 10 }}
-        >
-          {busy ? "Logging in…" : "Log in"}
-        </button>
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="space-y-4">
 
-      </form>
+            {/* Email or username */}
+            <div className="space-y-1.5">
+              <label
+                htmlFor="email"
+                className="text-sm font-medium text-foreground"
+              >
+                Email or username
+              </label>
+              <input
+                id="email"
+                type="text"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+                placeholder="you@example.com"
+                className="w-full rounded-[var(--radius-md)] border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none ring-offset-background transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </div>
 
-      {/* Link to the register page */}
-      <p style={{ marginTop: 16 }}>
-        No account yet? <Link to="/register">Register here</Link>
-      </p>
+            {/* Password */}
+            <div className="space-y-1.5">
+              <label
+                htmlFor="password"
+                className="text-sm font-medium text-foreground"
+              >
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                placeholder="••••••••"
+                className="w-full rounded-[var(--radius-md)] border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none ring-offset-background transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </div>
+
+            {/* Error area — only shown when there is an error */}
+            {error && (
+              <div className="rounded-[var(--radius-sm)] bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+
+            {/* Submit button — shows a busy message while the request is in flight */}
+            <button
+              type="submit"
+              disabled={busy}
+              className="w-full rounded-[var(--radius-md)] bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {busy ? "Logging in…" : "Log in"}
+            </button>
+
+          </form>
+
+          {/* Link to the register page */}
+          <p className="text-center text-sm text-muted-foreground">
+            No account yet?{" "}
+            <Link
+              to="/register"
+              className="font-medium text-foreground underline-offset-4 hover:underline"
+            >
+              Register here
+            </Link>
+          </p>
+
+        </div>
+      </div>
     </div>
   );
 }
