@@ -82,6 +82,19 @@ const ParticipantRouteParamsSchema = z.object({
   userId: z.string().uuid("Participant ID must be a valid UUID"),
 });
 
+/**
+ * Query params for GET /api/conversations
+ * Supports optional cursor-based pagination.
+ *
+ * - limit  : number of conversations to return (1–50, default 20)
+ * - cursor : createdAt ISO-8601 timestamp of the last seen conversation;
+ *            omit to fetch the first page
+ */
+const ListConversationsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+  cursor: z.string().optional(),
+});
+
 
 // ─── POST /api/conversations ──────────────────────────────────────────────────
 //
@@ -109,8 +122,13 @@ router.post(
 // Includes: displayName, displayPicture, participants, lastMessage, unreadCount.
 // Sorted by most recent activity DESC.
 //
+// Query (optional, validated by ListConversationsQuerySchema):
+//   limit  — how many conversations to return (1–50, default 20)
+//   cursor — ISO-8601 createdAt of the last seen conversation (pagination)
+//
 router.get(
   "/",
+  validate({ query: ListConversationsQuerySchema }),
   getAllConversationsController,
 );
 

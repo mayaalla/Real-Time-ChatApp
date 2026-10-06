@@ -9,15 +9,14 @@
 //   3. Then calls the controller (pure HTTP plumbing).
 // ============================================================
 
-import type { Request, Response, NextFunction } from "express";
 import { Router } from "express";
+import { withRateLimit } from "../../middleware/withRateLimit.js";
 import { validate } from "../../middleware/validate.js";
 import {
   loginLimiter,
   refreshLimiter,
   registerLimiter,
 } from "../../utils/rateLimiter.js";
-import type { rateLimiter } from "../../utils/rateLimiter.js";
 import {
   loginController,
   logoutController,
@@ -27,39 +26,6 @@ import {
 import { LoginBodySchema, RegisterBodySchema } from "./auth.schemas.js";
 
 const router = Router();
-
-// ─── Rate-limit middleware factory ───────────────────────────
-
-/**
- * Build an Express middleware that checks the given limiter for `req.ip`.
- *
- * If the limit is exceeded it immediately responds 429 Too Many Requests
- * with a `Retry-After` header and never calls next().
- */
-function withRateLimit(
-  limiter: ReturnType<typeof rateLimiter>,
-) {
-  return function rateLimitMiddleware(
-    req: Request,
-    res: Response,
-    next: NextFunction,
-  ): void {
-    const ip = req.ip ?? "unknown";
-
-    if (!limiter.check(ip)) {
-      const retryAfter = limiter.retryAfterSeconds(ip);
-      res.set("Retry-After", String(retryAfter));
-      res.status(429).json({
-        ok: false,
-        code: "TOO_MANY_REQUESTS",
-        message: `Too many attempts. Please try again in ${retryAfter} seconds.`,
-      });
-      return;
-    }
-
-    next();
-  };
-}
 
 // ── POST /api/auth/register ───────────────────────────────────
 // Rate-limited → schema-validated → register.

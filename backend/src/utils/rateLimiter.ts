@@ -97,23 +97,30 @@ export function rateLimiter(options: RateLimiterOptions) {
 }
 
 // ─── Shared limiter instances ─────────────────────────────────
-// One limiter per restricted endpoint.  All use the same policy:
-// 5 attempts per 15 minutes per IP.
+// One limiter per restricted endpoint.
 
-const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const MAX_ATTEMPTS = 5;
+// Auth endpoints: 5 attempts per 15 minutes per IP.
+const AUTH_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const AUTH_MAX_ATTEMPTS = 5;
 
 export const registerLimiter = rateLimiter({
-  maxAttempts: MAX_ATTEMPTS,
-  windowMs: WINDOW_MS,
+  maxAttempts: AUTH_MAX_ATTEMPTS,
+  windowMs: AUTH_WINDOW_MS,
 });
 
 export const loginLimiter = rateLimiter({
-  maxAttempts: MAX_ATTEMPTS,
-  windowMs: WINDOW_MS,
+  maxAttempts: AUTH_MAX_ATTEMPTS,
+  windowMs: AUTH_WINDOW_MS,
 });
 
 export const refreshLimiter = rateLimiter({
-  maxAttempts: MAX_ATTEMPTS,
-  windowMs: WINDOW_MS,
+  maxAttempts: AUTH_MAX_ATTEMPTS,
+  windowMs: AUTH_WINDOW_MS,
+});
+
+// Upload sign endpoint: tighter limit — 10 signed tokens per 60 s per IP.
+// Prevents Cloudinary API quota exhaustion by authenticated users.
+export const uploadSignLimiter = rateLimiter({
+  maxAttempts: 10,
+  windowMs: 60 * 1000, // 60 seconds
 });
