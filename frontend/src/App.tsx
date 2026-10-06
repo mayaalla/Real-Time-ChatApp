@@ -7,6 +7,7 @@ import { PrivateRoute }       from "./components/PrivateRoute";
 import { PublicOnlyRoute }    from "./components/PublicOnlyRoute";
 import { ChatShell }          from "./layouts/ChatShell";
 import { EmptyState }         from "./components/EmptyState";
+import { ChatArea }           from "./pages/ChatArea";
 import { LoginPage }          from "./pages/LoginPage";
 import { RegisterPage }       from "./pages/RegisterPage";
 import { NotFoundPage }       from "./pages/NotFoundPage";
@@ -40,7 +41,7 @@ export default function App() {
         <Route element={<PrivateRoute />}>
           <Route element={<ChatShell />}>
             <Route path="/"       element={<EmptyState />} />
-            <Route path="/c/:conversationId" element={<EmptyState />} />
+            <Route path="/c/:conversationId" element={<ChatArea />} />
           </Route>
           {/* Add more private routes here as you build them */}
         </Route>

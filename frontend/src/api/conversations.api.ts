@@ -16,7 +16,7 @@ export async function fetchConversations(token: string): Promise<unknown[]> {
   });
   if (!res.ok) throw new Error("Could not load conversations");
   const json = await res.json();
-  return json.data ?? [];
+  return json.data?.conversations ?? [];
 }
 
 // ─── createConversation ───────────────────────────────────────────────────────

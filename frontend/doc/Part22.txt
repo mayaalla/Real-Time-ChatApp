@@ -1,0 +1,1867 @@
+================================================================================
+  PART 22 — FRONTEND CHAT WINDOW AND HISTORY
+  Step-by-step guide written in simple language
+  Your project: /media/maya/A4E6D724E6D6F610/Maya/Chatapp/frontend
+================================================================================
+
+BEFORE YOU START — CHECKLIST
+────────────────────────────────────────
+Make sure ALL of these are true before touching a single file here:
+
+  [ ] Part 20 is fully done  (auth store, session restore, login, logout, route guards)
+  [ ] Part 21 is fully done  (conversation list sidebar works and shows correctly)
+  [ ] Your backend is running on http://localhost:4000
+  [ ] Socket.IO connection is established after login
+  [ ] GET /api/conversations/:id/messages  works and returns the cursor response
+  [ ] You have a seeded conversation with at least 50 messages in the database
+        (so you have real data to test scrolling, pagination, and bubbles)
+  [ ] These packages are installed:
+        @tanstack/react-query   (for useInfiniteQuery)
+        socket.io-client        (for live events)
+        zustand                 (for typing/presence/draft state)
+        uuid                    (for client-generated message IDs)
+        date-fns                (for "Today", "Yesterday", relative times)
+              → install with:  npm install date-fns
+
+If any of those are not true, finish the earlier parts first.
+
+================================================================================
+
+PART 22 — CHAT WINDOW AND HISTORY
+
+GOAL: When the user clicks a conversation, a full chat window opens.
+      It shows the history, streams in new messages live, scrolls correctly
+      in every situation, and lets the user type and send new messages.
+
+Think of the chat window like a physical notebook:
+  - The pages already written = message history loaded from the server (REST).
+  - New words being written in real time = live messages from the socket.
+  - The scroll position = which page you are looking at.
+  - The composer at the bottom = the pen in your hand.
+
+The tricky part is making sure that when you flip back to read an old page,
+the notebook does not jump and lose your place — and when someone adds a new
+line while you are reading, you only get pulled forward if you were already
+at the last page.
+
+================================================================================
+
+STEP 22.1 — BUILD THE CHAT HEADER
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  The header sits at the top of the chat window. It tells you who or what
+  you are talking to, whether they are online, and — in groups — who else
+  is here.
+
+  For a DM (direct message between two people):
+    - Show the other person's avatar and username.
+    - Show one of three status lines, in this priority order:
+        1. "typing…"              ← if they are currently typing
+        2. "online"               ← if they are online but not typing
+        3. "last seen 5 min ago"  ← if offline, show a friendly time
+
+  For a group chat:
+    - Show the group avatar (or a default group icon) and the group name.
+    - Show "3 members" (the count).
+    - Tapping the member count opens a small member list panel.
+
+  On a narrow screen (mobile width):
+    - Show a back-arrow button that takes the user back to the conversation list.
+
+────────────────────────────────────────────────────────────────────────────────
+
+UNDERSTAND THE DATA YOU NEED:
+  Everything you need is already in your Zustand stores from earlier parts.
+  You just need to READ from them here — no new network calls.
+
+  ① The conversation object → from your conversation store or from the URL param.
+     It contains:  isGroup, displayName, displayPicture, participants[]
+  ② Presence status (online/offline/lastSeen) → from your presence Zustand store.
+  ③ Typing indicator → from your typing Zustand store.
+     The server sends you  typing:update → { conversationId, typerIds: string[] }
+     Your store maps conversationId → array of userIds who are typing.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/components/chat/ChatHeader.tsx
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/components/chat/ChatHeader.tsx  ────────
+
+import { useState } from "react";
+import { formatDistanceToNow } from "date-fns";
+import { ArrowLeft, Users } from "lucide-react";
+import { useAuthStore }     from "../../stores/authStore";
+import { usePresenceStore } from "../../stores/presenceStore";
+import { useTypingStore }   from "../../stores/typingStore";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// Renders the top bar of the open chat window.
+// It reacts live to presence and typing changes from the Zustand stores.
+// No network calls here — just reads state.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface Participant {
+  id: string;
+  username: string;
+  avatarAddress: string | null;
+  lastSeen: string | null;
+}
+
+interface Conversation {
+  id: string;
+  isGroup: boolean;
+  displayName: string;
+  displayPicture: string | null;
+  participants: Participant[];
+}
+
+interface ChatHeaderProps {
+  conversation: Conversation;
+  onBack?: () => void;   // called when the back arrow is pressed (mobile only)
+}
+
+export function ChatHeader({ conversation, onBack }: ChatHeaderProps) {
+  const currentUser  = useAuthStore((s) => s.user);
+  const presenceMap  = usePresenceStore((s) => s.presenceMap);
+  const typingMap    = useTypingStore((s) => s.typingMap);
+  const [showMembers, setShowMembers] = useState(false);
+
+  // ── Who is typing in this conversation? ─────────────────────────────────────
+  // Filter out ourselves — we only show OTHERS typing.
+  const typerIds = (typingMap.get(conversation.id) ?? []).filter(
+    (id) => id !== currentUser?.id
+  );
+
+  // ── The other person in a DM ─────────────────────────────────────────────────
+  const otherPerson = !conversation.isGroup
+    ? conversation.participants.find((p) => p.id !== currentUser?.id)
+    : null;
+
+  // ── Build the status line ────────────────────────────────────────────────────
+  function getStatusLine(): string {
+    if (conversation.isGroup) {
+      return `${conversation.participants.length} members`;
+    }
+
+    // DM: Check typing first (highest priority).
+    if (typerIds.length > 0) return "typing…";
+
+    // Then check online/offline from presence store.
+    const presence = otherPerson ? presenceMap.get(otherPerson.id) : undefined;
+    if (presence?.online) return "online";
+
+    // Last resort: show when they were last seen.
+    const lastSeen = presence?.lastSeen ?? otherPerson?.lastSeen;
+    if (lastSeen) {
+      return `last seen ${formatDistanceToNow(new Date(lastSeen), { addSuffix: true })}`;
+    }
+
+    return "offline";
+  }
+
+  const statusLine = getStatusLine();
+  const isTyping   = typerIds.length > 0;
+  const isOnline   = !conversation.isGroup &&
+                     presenceMap.get(otherPerson?.id ?? "")?.online === true;
+
+  return (
+    <header className="flex items-center gap-3 px-4 py-3 border-b border-border
+                       bg-card shadow-sm relative">
+
+      {/* Back arrow — mobile only */}
+      {onBack && (
+        <button
+          onClick={onBack}
+          aria-label="Back to conversations"
+          className="text-muted-foreground hover:text-foreground transition-colors md:hidden"
+        >
+          <ArrowLeft size={22} />
+        </button>
+      )}
+
+      {/* Avatar */}
+      <div className="relative shrink-0">
+        {conversation.displayPicture ? (
+          <img
+            src={conversation.displayPicture}
+            alt={conversation.displayName}
+            className="w-10 h-10 rounded-full object-cover"
+          />
+        ) : (
+          <div className="w-10 h-10 rounded-full bg-accent flex items-center
+                          justify-center text-accent-foreground font-semibold text-sm">
+            {conversation.displayName.charAt(0).toUpperCase()}
+          </div>
+        )}
+
+        {/* Online dot for DMs */}
+        {isOnline && (
+          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full
+                           bg-green-500 border-2 border-card" />
+        )}
+      </div>
+
+      {/* Name + status */}
+      <div className="flex-1 min-w-0">
+        <p className="font-semibold text-foreground truncate leading-tight">
+          {conversation.displayName}
+        </p>
+        <p
+          className={`text-xs truncate leading-tight ${
+            isTyping
+              ? "text-primary italic"
+              : statusLine === "online"
+              ? "text-green-500"
+              : "text-muted-foreground"
+          }`}
+        >
+          {statusLine}
+        </p>
+      </div>
+
+      {/* Group member count button */}
+      {conversation.isGroup && (
+        <button
+          onClick={() => setShowMembers((v) => !v)}
+          aria-label="Show members"
+          className="text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Users size={20} />
+        </button>
+      )}
+
+      {/* Member list panel */}
+      {showMembers && conversation.isGroup && (
+        <div className="absolute top-16 right-4 z-50 bg-card border border-border
+                        rounded-xl shadow-lg p-3 w-56 max-h-72 overflow-y-auto">
+          <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
+            Members
+          </p>
+          {conversation.participants.map((p) => (
+            <div key={p.id} className="flex items-center gap-2 py-1.5">
+              {p.avatarAddress ? (
+                <img src={p.avatarAddress} alt={p.username}
+                     className="w-7 h-7 rounded-full object-cover shrink-0" />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-secondary flex items-center
+                                justify-center text-xs font-semibold shrink-0">
+                  {p.username.charAt(0).toUpperCase()}
+                </div>
+              )}
+              <span className="text-sm text-foreground truncate flex-1">
+                {p.username}
+              </span>
+              {presenceMap.get(p.id)?.online && (
+                <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+    </header>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+  HOW THE LIVE UPDATES WORK:
+    Your presence Zustand store is updated by the socket's "presence:update" event.
+    Your typing Zustand store is updated by "typing:update" events.
+    Because this component reads from Zustand, React re-renders it automatically
+    whenever those stores change — no useEffect or polling needed here.
+
+  WHY formatDistanceToNow FROM date-fns?
+    It converts any ISO date string into human-readable text automatically.
+    "2026-10-06T07:40:00Z" becomes "about 1 hour ago".
+    Install with:  npm install date-fns
+
+✅ DONE WHEN:
+   • The header shows the correct name and picture for the conversation.
+   • For DMs: the status line changes between "typing…", "online",
+     and "last seen X ago" in real time — no page refresh needed.
+   • For groups: the member count appears; tapping it shows the list.
+   • On mobile: the back arrow is visible and fires onBack when clicked.
+   • No TypeScript errors.
+
+================================================================================
+
+STEP 22.2 — LOAD THE HISTORY
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  We need to load the list of messages from the backend REST endpoint and
+  display them correctly.
+
+  IMPORTANT THINGS TO KNOW ABOUT THE ENDPOINT:
+
+    GET /api/conversations/:id/messages?limit=50&cursor=<ISO-datetime>
+
+    ① First load: call it with NO cursor. You get the 50 NEWEST messages.
+    ② The server returns them NEWEST-FIRST (newest at index 0).
+       You MUST reverse the array before displaying, so the oldest is at the top.
+    ③ The response includes a nextCursor and a hasMore flag.
+       When the user scrolls up, pass nextCursor to load older messages.
+    ④ When hasMore is false, you have reached the very beginning of history.
+
+  We use React Query's useInfiniteQuery for this. It handles multiple "pages"
+  of data and merges them into one list automatically.
+
+  THINK OF IT LIKE A NEWSPAPER ARCHIVE:
+    - The first page you open shows today's paper (newest 50 messages).
+    - To read yesterday's paper, you ask for the "previous edition" via cursor.
+    - React Query remembers all the editions you have fetched.
+    - You reverse the stack so the oldest paper is at the top, newest at the bottom.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/api/messages.api.ts
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/api/messages.api.ts  ───────────────────
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Contains the HTTP call for fetching message history.
+// Used by useInfiniteQuery in Step 22.2.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+const API = import.meta.env.VITE_API_URL as string;
+
+export interface Message {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  textBody: string | null;
+  attachments: string[];
+  status: "SENT" | "DELIVERED" | "READ" | "PENDING" | "FAILED";
+  createdAt: string;
+  editedAt: string | null;
+  deletedAt: string | null;
+  sender?: {
+    id: string;
+    username: string;
+    avatarAddress: string | null;
+    lastSeen: string | null;
+  };
+}
+
+export interface MessagesPage {
+  messages: Message[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+// fetchMessages — fetches one page of message history.
+// cursor is the ISO-datetime string the previous page returned as nextCursor.
+// Pass undefined for the very first load (no cursor = newest 50 messages).
+export async function fetchMessages(
+  conversationId: string,
+  token: string,
+  cursor?: string,
+  limit = 50
+): Promise<MessagesPage> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
+
+  const res = await fetch(
+    `${API}/api/conversations/${conversationId}/messages?${params}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "include",
+    }
+  );
+
+  if (!res.ok) throw new Error("Failed to load messages");
+
+  const json = await res.json();
+  return json.data as MessagesPage;
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/hooks/useMessageHistory.ts
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/hooks/useMessageHistory.ts  ────────────
+
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { useAuthStore }     from "../stores/authStore";
+import { fetchMessages, Message } from "../api/messages.api";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// Wraps useInfiniteQuery to fetch message history for one conversation.
+// Returns:
+//   messages       → all messages, oldest-first, ready to render top-to-bottom
+//   isLoading      → true while the very first page is loading
+//   isFetchingMore → true while loading an older page (user scrolled up)
+//   hasMore        → true if there are older messages we have not fetched yet
+//   loadMore()     → call this to fetch the next older page
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function useMessageHistory(conversationId: string) {
+  const token = useAuthStore((s) => s.accessToken)!;
+
+  const query = useInfiniteQuery({
+    queryKey: ["messages", conversationId],
+
+    // queryFn is called every time React Query needs a page.
+    // pageParam is the cursor for that page. On the first call it is undefined.
+    queryFn: ({ pageParam }) =>
+      fetchMessages(conversationId, token, pageParam as string | undefined),
+
+    // Tell React Query: use the nextCursor from each page as the pageParam
+    // for the NEXT page. If nextCursor is null, there are no more pages.
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+
+    initialPageParam: undefined,
+
+    // Keep old data while re-fetching so the screen does not go blank.
+    placeholderData: (prev) => prev,
+  });
+
+  // React Query stores pages in the order they were fetched:
+  //   pages[0] = first page fetched  (newest 50 messages, newest at index 0)
+  //   pages[1] = second page fetched (older 50, newest at index 0)
+  //   ...and so on as the user scrolls up.
+  //
+  // We need ONE flat array, OLDEST message first.
+  // Step 1: Reverse the pages array so the oldest page comes first.
+  // Step 2: Within each page, reverse the messages (server returns newest-first).
+  const messages: Message[] = (query.data?.pages ?? [])
+    .slice()               // copy — do NOT mutate the original
+    .reverse()             // oldest page first
+    .flatMap((page) => page.messages.slice().reverse()); // oldest message first in each page
+
+  return {
+    messages,
+    isLoading:      query.isLoading,
+    isFetchingMore: query.isFetchingNextPage,
+    hasMore:        query.hasNextPage ?? false,
+    loadMore:       query.fetchNextPage,
+  };
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/components/chat/MessageListSkeleton.tsx
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/components/chat/MessageListSkeleton.tsx  ──
+
+// ─── MessageListSkeleton ──────────────────────────────────────────────────────
+// Shown while the first page of messages is loading.
+// Renders fake grey bubbles to avoid a blank white screen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function MessageListSkeleton() {
+  const rows = [
+    { side: "left",  width: "60%" },
+    { side: "right", width: "40%" },
+    { side: "left",  width: "75%" },
+    { side: "right", width: "55%" },
+    { side: "left",  width: "50%" },
+    { side: "right", width: "65%" },
+  ];
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-6 animate-pulse">
+      {rows.map((row, i) => (
+        <div
+          key={i}
+          className={`flex ${row.side === "right" ? "justify-end" : "justify-start"}`}
+        >
+          <div
+            className="h-10 rounded-2xl bg-muted"
+            style={{ width: row.width }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/components/chat/EmptyConversation.tsx
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/components/chat/EmptyConversation.tsx  ──
+
+// Shown when the conversation has zero messages (brand-new chat).
+export function EmptyConversation({ name }: { name: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center flex-1 gap-3
+                    text-center px-8 text-muted-foreground">
+      <div className="w-16 h-16 rounded-full bg-muted flex items-center
+                      justify-center text-3xl">
+        💬
+      </div>
+      <p className="font-semibold text-foreground">Start the conversation</p>
+      <p className="text-sm">
+        This is the beginning of your chat with <strong>{name}</strong>.
+        Say hello!
+      </p>
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Opening a conversation that has messages → the newest 50 appear at the bottom.
+   • Opening a brand-new conversation → the EmptyConversation screen appears.
+   • While the first page loads → grey placeholder bubbles are shown.
+   • No TypeScript errors.
+   • (Scrolling behaviour is wired in Step 22.3 — do not test that yet.)
+
+================================================================================
+
+STEP 22.3 — GET THE SCROLLING RIGHT
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  Scrolling in a chat window is the hardest UI problem in this entire project.
+  Most chat apps get it subtly wrong. We are going to get it right.
+
+  There are FOUR different situations and each needs its own behaviour:
+
+  ─────────────────────────────────────────────────────────────────────────────
+  SITUATION 1 — FIRST LOAD
+    The conversation just opened. The user has never scrolled.
+    → Jump instantly to the bottom. No animation. No delay.
+    → Why: A smooth scroll on first load looks weird and slow.
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ─────────────────────────────────────────────────────────────────────────────
+  SITUATION 2 — NEW MESSAGE, USER IS AT THE BOTTOM
+    The user is reading the latest messages and a new one arrives.
+    → Scroll smoothly to the new message.
+    → Why: They are following the conversation — follow it for them.
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ─────────────────────────────────────────────────────────────────────────────
+  SITUATION 3 — NEW MESSAGE, USER HAS SCROLLED UP
+    The user scrolled up to read old messages and a new one arrives.
+    → DO NOT move the scroll position.
+    → Show a small "↓ New messages" pill at the bottom of the screen.
+    → When they click the pill, scroll smoothly to the bottom.
+    → Why: Yanking the view while someone is reading is extremely rude.
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ─────────────────────────────────────────────────────────────────────────────
+  SITUATION 4 — LOADING OLDER MESSAGES (USER SCROLLED TO THE TOP)
+    The user reached the top of the loaded messages and we fetch an older page.
+    Naively, the new messages are inserted at the TOP, which pushes everything
+    down and makes the content jump under the reader's eyes.
+    → Before inserting: record the current scrollHeight.
+    → After inserting:  set scrollTop = scrollTop + (newHeight - oldHeight).
+    → Why: This makes it look like nothing moved at all.
+  ─────────────────────────────────────────────────────────────────────────────
+
+  THINK OF A PHYSICAL NEWSPAPER STACK:
+    Situation 1 = putting the stack on the table, opening it at the last page.
+    Situation 2 = the printer adds a page at the end; you turn to it.
+    Situation 3 = you are reading page 3; the printer adds page 10 but you stay
+                  on page 3 with a note saying "new pages added at the end".
+    Situation 4 = a librarian slides older pages in at the beginning but keeps
+                  the page you are looking at exactly where it is.
+
+────────────────────────────────────────────────────────────────────────────────
+
+HOW WE DETECT "IS THE USER AT THE BOTTOM?":
+  We use a simple rule:
+    isAtBottom = scrollContainer.scrollHeight
+                 - scrollContainer.scrollTop
+                 - scrollContainer.clientHeight
+                 < 80 pixels
+
+  If the gap between the current scroll position and the absolute bottom
+  is less than 80 pixels, the user is considered "at the bottom".
+  80 pixels gives a comfortable buffer — they do not have to be pixel-perfect.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/hooks/useScrollManager.ts
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/hooks/useScrollManager.ts  ─────────────
+
+import { useRef, useCallback } from "react";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// Manages all four scroll situations for the chat window.
+//
+// RETURNS:
+//   containerRef    → attach to the scrollable <div> as  ref={containerRef}
+//   scrollToBottom  → call with animate=false for first load, animate=true for new msg
+//   isAtBottom()    → returns true if the user is within 80px of the bottom
+//   captureHeight() → call BEFORE inserting older messages — saves the scrollHeight
+//   restoreHeight() → call AFTER inserting older messages — restores the position
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BOTTOM_THRESHOLD = 80; // pixels
+
+export function useScrollManager() {
+  const containerRef      = useRef<HTMLDivElement>(null);
+  const savedScrollHeight = useRef<number>(0);
+
+  // ── isAtBottom ─────────────────────────────────────────────────────────────
+  const isAtBottom = useCallback((): boolean => {
+    const el = containerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD;
+  }, []);
+
+  // ── scrollToBottom ─────────────────────────────────────────────────────────
+  // animate=false → instant jump  (Situation 1)
+  // animate=true  → smooth scroll (Situation 2)
+  const scrollToBottom = useCallback((animate: boolean = false) => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top:      el.scrollHeight,
+      behavior: animate ? "smooth" : "instant",
+    });
+  }, []);
+
+  // ── captureHeight ──────────────────────────────────────────────────────────
+  // Call BEFORE React inserts new DOM nodes (older messages at the top).
+  const captureHeight = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    savedScrollHeight.current = el.scrollHeight;
+  }, []);
+
+  // ── restoreHeight ──────────────────────────────────────────────────────────
+  // Call AFTER React has inserted the new DOM nodes.
+  // Adjusts scrollTop by the difference so visible content does not move.
+  const restoreHeight = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const heightDiff = el.scrollHeight - savedScrollHeight.current;
+    el.scrollTop += heightDiff;
+  }, []);
+
+  return { containerRef, scrollToBottom, isAtBottom, captureHeight, restoreHeight };
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/components/chat/MessageList.tsx
+────────────────────────────────────────────────────────────────────────────────
+
+  This is the main scroll container. It ties together the history hook,
+  the scroll manager hook, and all four scroll situations.
+
+────────────────── PASTE THIS INTO  src/components/chat/MessageList.tsx  ───────
+
+import { useEffect, useRef, useState, useCallback } from "react";
+import { ArrowDown } from "lucide-react";
+import { useAuthStore }         from "../../stores/authStore";
+import { useMessageHistory }    from "../../hooks/useMessageHistory";
+import { useScrollManager }     from "../../hooks/useScrollManager";
+import { MessageListSkeleton }  from "./MessageListSkeleton";
+import { EmptyConversation }    from "./EmptyConversation";
+import { MessageBubble }        from "./MessageBubble";
+import { buildMessageGroups }   from "../../utils/messageGrouping";
+import { Message }              from "../../api/messages.api";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// The scrollable message area.
+// Handles all four scroll situations.
+// Merges REST history (from useMessageHistory) with live socket messages
+// passed in via the liveMessages prop.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface MessageListProps {
+  conversationId: string;
+  conversationName: string;
+  isGroup: boolean;
+  liveMessages: Message[];  // messages that arrived via socket after REST history loaded
+}
+
+export function MessageList({
+  conversationId,
+  conversationName,
+  isGroup,
+  liveMessages,
+}: MessageListProps) {
+  const currentUser = useAuthStore((s) => s.user);
+
+  const { messages, isLoading, isFetchingMore, hasMore, loadMore } =
+    useMessageHistory(conversationId);
+
+  const { containerRef, scrollToBottom, isAtBottom, captureHeight, restoreHeight } =
+    useScrollManager();
+
+  const [showNewPill, setShowNewPill] = useState(false);
+  const isFirstLoad  = useRef(true);
+  const prevLiveCount = useRef(0);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+
+  // ── Merge REST history with live socket messages ──────────────────────────
+  // De-duplicate by id — the socket sometimes echoes our own sends back.
+  const historyIds  = new Set(messages.map((m) => m.id));
+  const allMessages = [
+    ...messages,
+    ...liveMessages.filter((m) => !historyIds.has(m.id)),
+  ];
+
+  // Build display groups (date dividers + consecutive-run metadata).
+  const groups = buildMessageGroups(allMessages, currentUser?.id);
+
+  // ── SITUATION 1: First load → jump to bottom instantly ────────────────────
+  useEffect(() => {
+    if (!isLoading && isFirstLoad.current) {
+      isFirstLoad.current = false;
+      // Use setTimeout(0) so the DOM has painted before we measure scrollHeight.
+      setTimeout(() => scrollToBottom(false), 0);
+    }
+  }, [isLoading, scrollToBottom]);
+
+  // ── SITUATION 2 & 3: New live message arrived ─────────────────────────────
+  useEffect(() => {
+    if (liveMessages.length <= prevLiveCount.current) return;
+    prevLiveCount.current = liveMessages.length;
+    if (isFirstLoad.current) return; // not ready yet
+
+    if (isAtBottom()) {
+      // Situation 2: user is at the bottom → scroll smoothly.
+      scrollToBottom(true);
+    } else {
+      // Situation 3: user is reading old messages → show pill only.
+      setShowNewPill(true);
+    }
+  }, [liveMessages.length, isAtBottom, scrollToBottom]);
+
+  // ── SITUATION 4: Loading older messages → preserve scroll position ─────────
+  // An IntersectionObserver watches a tiny sentinel <div> at the very top.
+  // When it becomes visible, the user has scrolled to the top → load more.
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !isFetchingMore) {
+          captureHeight();         // Step A: record current scrollHeight
+          loadMore().then(() => {
+            restoreHeight();       // Step B: after DOM updates, fix scrollTop
+          });
+        }
+      },
+      { root: containerRef.current, threshold: 0 }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, isFetchingMore, loadMore, captureHeight, restoreHeight, containerRef]);
+
+  // ── Pill click → scroll to bottom ──────────────────────────────────────────
+  const handlePillClick = useCallback(() => {
+    scrollToBottom(true);
+    setShowNewPill(false);
+  }, [scrollToBottom]);
+
+  // ── Hide pill when user manually scrolls to the bottom ─────────────────────
+  const handleScroll = useCallback(() => {
+    if (isAtBottom()) setShowNewPill(false);
+  }, [isAtBottom]);
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+  if (isLoading) return <MessageListSkeleton />;
+
+  if (allMessages.length === 0) {
+    return <EmptyConversation name={conversationName} />;
+  }
+
+  return (
+    <div className="relative flex flex-col flex-1 overflow-hidden">
+
+      {/* The scrollable container */}
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-1"
+        style={{ overscrollBehavior: "contain" }}
+      >
+        {/* Sentinel: becomes visible when the user scrolls to the very top */}
+        <div ref={topSentinelRef} className="h-px shrink-0" />
+
+        {/* Loading spinner for older pages */}
+        {isFetchingMore && (
+          <div className="flex justify-center py-3">
+            <div className="w-5 h-5 rounded-full border-2 border-muted
+                            border-t-primary animate-spin" />
+          </div>
+        )}
+
+        {/* "Beginning of history" label */}
+        {!hasMore && allMessages.length > 0 && (
+          <p className="text-center text-xs text-muted-foreground py-2">
+            Beginning of conversation
+          </p>
+        )}
+
+        {/* Render date dividers and message bubbles */}
+        {groups.map((item, i) => {
+          if (item.type === "date-divider") {
+            return (
+              <div key={`divider-${item.label}-${i}`}
+                   className="flex items-center gap-3 my-3">
+                <div className="flex-1 h-px bg-border" />
+                <span className="text-xs text-muted-foreground px-2">
+                  {item.label}
+                </span>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+            );
+          }
+          return (
+            <MessageBubble
+              key={item.message.id}
+              message={item.message}
+              isOwn={item.isOwn}
+              showSenderInfo={item.showSenderInfo}
+              isGroup={isGroup}
+            />
+          );
+        })}
+      </div>
+
+      {/* "↓ New messages" pill — Situation 3 */}
+      {showNewPill && (
+        <button
+          onClick={handlePillClick}
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10
+                     flex items-center gap-1.5 px-4 py-2 rounded-full
+                     bg-primary text-primary-foreground text-sm font-medium
+                     shadow-md hover:opacity-90 transition-opacity"
+        >
+          <ArrowDown size={14} />
+          New messages
+        </button>
+      )}
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Opening a conversation → instantly jumps to the bottom (no animation).
+   • A new message arrives while at the bottom → smoothly scrolls down.
+   • A new message arrives while scrolled up → "New messages" pill appears,
+     view does NOT jump.
+   • Clicking the pill → smoothly scrolls to the bottom; pill disappears.
+   • Scrolling to the top loads older messages and the content does NOT jump.
+   • After loading three pages of history, all four situations still work.
+   • No TypeScript errors.
+
+================================================================================
+
+STEP 22.4 — BUILD THE MESSAGE BUBBLE
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  Each message in the list is a "bubble" — a small card.
+
+  RULES FOR HOW BUBBLES LOOK:
+    Own messages   → aligned to the RIGHT, background uses your brand colour
+                     (--primary from your tokens = the yellowish-green OKLCH colour)
+    Other people   → aligned to the LEFT, background uses --secondary (neutral grey)
+
+  INSIDE EACH BUBBLE:
+    - The message text (or a "message deleted" placeholder if deletedAt is set)
+    - The time (small text in the corner)
+    - For your own messages ONLY: the status ticks (✓ or ✓✓, grey or blue)
+    - If the message was edited: a small "edited" label
+
+  GROUPING CONSECUTIVE MESSAGES:
+    When the same person sends several messages in a row within 5 minutes,
+    only the FIRST message in the run shows the sender's avatar and name.
+    The rest just show the bubble. This makes the chat look cleaner.
+    In a DM, sender names are never shown (there are only two people).
+    In a GROUP, the sender name appears above the first bubble in a run.
+
+  DATE DIVIDERS:
+    Whenever the calendar day changes between two consecutive messages,
+    insert a horizontal line with a label: "Today", "Yesterday", or the date.
+
+  ATTACHMENTS:
+    - Images → shown as a thumbnail (max 240px wide). Clicking opens the full image.
+    - Other files (PDF, Word, etc.) → shown as a card with a download link.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/utils/messageGrouping.ts
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/utils/messageGrouping.ts  ──────────────
+
+import { isToday, isYesterday, format, differenceInMinutes } from "date-fns";
+import { Message } from "../api/messages.api";
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Turns a flat sorted list of Messages (oldest first) into a display list
+// that includes date dividers and grouping metadata for consecutive runs.
+//
+// OUTPUT: An array of GroupItem objects. Each item is one of:
+//   { type: "date-divider", label: "Today" / "Yesterday" / "6 Oct 2026" }
+//   { type: "message", message, isOwn, showSenderInfo }
+//
+// showSenderInfo = true on the FIRST message of a consecutive run from the
+// same sender. A run breaks when:
+//   - The sender changes.
+//   - More than 5 minutes pass between two messages from the same sender.
+//   - A date divider is inserted (day change resets the run).
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MAX_RUN_MINUTES = 5;
+
+export type GroupItem =
+  | { type: "date-divider"; label: string }
+  | { type: "message"; message: Message; isOwn: boolean; showSenderInfo: boolean };
+
+function formatDividerLabel(date: Date): string {
+  if (isToday(date))     return "Today";
+  if (isYesterday(date)) return "Yesterday";
+  return format(date, "d MMM yyyy");   // e.g. "2 Oct 2026"
+}
+
+export function buildMessageGroups(
+  messages: Message[],
+  currentUserId?: string
+): GroupItem[] {
+  const result: GroupItem[] = [];
+  let lastDateStr: string | null  = null;
+  let lastSenderId: string | null = null;
+  let lastTimestamp: Date | null  = null;
+  let runBroken = true;
+
+  for (const msg of messages) {
+    const date    = new Date(msg.createdAt);
+    const dateStr = format(date, "yyyy-MM-dd");
+
+    // ── Insert a date divider when the day changes ────────────────────────────
+    if (dateStr !== lastDateStr) {
+      result.push({ type: "date-divider", label: formatDividerLabel(date) });
+      lastDateStr = dateStr;
+      runBroken   = true;   // a new day always starts a new run
+    }
+
+    // ── Decide if this is the first message of a new run ──────────────────────
+    const senderChanged = msg.senderId !== lastSenderId;
+    const tooMuchTime   =
+      lastTimestamp !== null &&
+      differenceInMinutes(date, lastTimestamp) > MAX_RUN_MINUTES;
+
+    const showSenderInfo = runBroken || senderChanged || tooMuchTime;
+
+    runBroken     = false;
+    lastSenderId  = msg.senderId;
+    lastTimestamp = date;
+
+    result.push({
+      type:           "message",
+      message:        msg,
+      isOwn:          msg.senderId === currentUserId,
+      showSenderInfo,
+    });
+  }
+
+  return result;
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/components/chat/MessageBubble.tsx
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/components/chat/MessageBubble.tsx  ─────
+
+import { format } from "date-fns";
+import { Download } from "lucide-react";
+import { Message } from "../../api/messages.api";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// Renders ONE message bubble. Handles:
+//   - Own vs other alignment and colour
+//   - Deleted message placeholder
+//   - Edited indicator
+//   - Status ticks (own messages only)
+//   - Image attachments (thumbnail that opens the full image in a new tab)
+//   - File attachments (card with filename + download link)
+//   - Sender name + avatar for group chats (first bubble of a run only)
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface MessageBubbleProps {
+  message: Message;
+  isOwn: boolean;
+  showSenderInfo: boolean;
+  isGroup: boolean;
+}
+
+// ── Status ticks ──────────────────────────────────────────────────────────────
+function StatusTick({ status }: { status: Message["status"] }) {
+  if (status === "PENDING")   return <span className="text-[10px] text-muted-foreground/60">⏳</span>;
+  if (status === "FAILED")    return <span className="text-[10px] text-destructive">!</span>;
+  if (status === "SENT")      return <span className="text-[10px] text-muted-foreground">✓</span>;
+  if (status === "DELIVERED") return <span className="text-[10px] text-muted-foreground">✓✓</span>;
+  if (status === "READ")      return <span className="text-[10px] text-blue-400">✓✓</span>;
+  return null;
+}
+
+// ── Guess if a URL is an image ────────────────────────────────────────────────
+function isImageUrl(url: string): boolean {
+  return /\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(url);
+}
+
+// ── Extract a filename from a URL ─────────────────────────────────────────────
+function filenameFromUrl(url: string): string {
+  try {
+    const path = new URL(url).pathname;
+    return decodeURIComponent(path.split("/").pop() ?? "file");
+  } catch {
+    return "file";
+  }
+}
+
+export function MessageBubble({
+  message,
+  isOwn,
+  showSenderInfo,
+  isGroup,
+}: MessageBubbleProps) {
+  const isDeleted = message.deletedAt !== null;
+  const isEdited  = !isDeleted && message.editedAt !== null;
+  const time      = format(new Date(message.createdAt), "HH:mm");
+
+  return (
+    <div
+      className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : "flex-row"} ${
+        showSenderInfo ? "mt-3" : "mt-0.5"
+      }`}
+    >
+      {/* Avatar column — groups only, other people's messages only */}
+      {isGroup && !isOwn && (
+        <div className="w-7 shrink-0 self-end mb-1">
+          {showSenderInfo && message.sender && (
+            message.sender.avatarAddress ? (
+              <img
+                src={message.sender.avatarAddress}
+                alt={message.sender.username}
+                className="w-7 h-7 rounded-full object-cover"
+              />
+            ) : (
+              <div className="w-7 h-7 rounded-full bg-secondary flex items-center
+                              justify-center text-xs font-semibold text-secondary-foreground">
+                {message.sender.username.charAt(0).toUpperCase()}
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {/* Bubble column */}
+      <div className={`flex flex-col max-w-[70%] ${isOwn ? "items-end" : "items-start"}`}>
+
+        {/* Sender name — groups, first message of run, not own */}
+        {isGroup && !isOwn && showSenderInfo && message.sender && (
+          <p className="text-xs text-muted-foreground font-medium mb-1 ml-1">
+            {message.sender.username}
+          </p>
+        )}
+
+        {/* The bubble */}
+        <div
+          className={`rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+            isOwn
+              ? "bg-primary text-primary-foreground rounded-br-sm"
+              : "bg-secondary text-secondary-foreground rounded-bl-sm"
+          }`}
+        >
+          {isDeleted ? (
+            <span className="italic opacity-60 text-xs">Message deleted</span>
+          ) : (
+            <>
+              {/* Attachments */}
+              {message.attachments.length > 0 && (
+                <div className="flex flex-col gap-2 mb-1">
+                  {message.attachments.map((url) =>
+                    isImageUrl(url) ? (
+                      <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+                        <img
+                          src={url}
+                          alt="attachment"
+                          className="max-w-[240px] rounded-xl object-cover cursor-pointer
+                                     hover:opacity-90 transition-opacity"
+                          loading="lazy"
+                        />
+                      </a>
+                    ) : (
+                      <a
+                        key={url}
+                        href={url}
+                        download
+                        className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs
+                                   font-medium no-underline transition-opacity hover:opacity-80 ${
+                                     isOwn
+                                       ? "bg-white/20 text-primary-foreground"
+                                       : "bg-background text-foreground border border-border"
+                                   }`}
+                      >
+                        <Download size={14} className="shrink-0" />
+                        <span className="truncate max-w-[160px]">
+                          {filenameFromUrl(url)}
+                        </span>
+                      </a>
+                    )
+                  )}
+                </div>
+              )}
+
+              {/* Message text */}
+              {message.textBody && (
+                <p className="whitespace-pre-wrap break-words">{message.textBody}</p>
+              )}
+            </>
+          )}
+
+          {/* Time + edited label + status ticks */}
+          <div
+            className={`flex items-center gap-1 mt-1 ${
+              isOwn ? "justify-end" : "justify-start"
+            }`}
+          >
+            {isEdited && (
+              <span
+                className={`text-[10px] ${
+                  isOwn ? "text-primary-foreground/60" : "text-muted-foreground"
+                }`}
+              >
+                edited
+              </span>
+            )}
+            <span
+              className={`text-[10px] ${
+                isOwn ? "text-primary-foreground/60" : "text-muted-foreground"
+              }`}
+            >
+              {time}
+            </span>
+            {isOwn && !isDeleted && <StatusTick status={message.status} />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Your own messages appear right-aligned with the primary brand colour.
+   • Other people's messages appear left-aligned with the neutral secondary colour.
+   • Status ticks (✓, ✓✓, blue ✓✓) show on your messages only.
+   • A deleted message shows "Message deleted" instead of text.
+   • An edited message shows a small "edited" label.
+   • Image attachments render as thumbnails; clicking opens the full image.
+   • File attachments render as a card with a download icon.
+   • In a group, only the first bubble of a run shows the sender name/avatar.
+   • Date dividers appear between days.
+   • A long seeded conversation reads clearly and nothing looks cramped.
+
+================================================================================
+
+STEP 22.5 — BUILD THE COMPOSER
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  The composer is the input area at the bottom of the chat.
+  It must handle all of these things:
+
+  ① GROW as the user types multiple lines (up to ~5 lines, then scroll inside).
+  ② SEND when Enter is pressed; add a new line when Shift+Enter is pressed.
+  ③ DISABLE the Send button when nothing is ready to send.
+  ④ REMEMBER a draft per conversation — switching chats does not lose typing.
+  ⑤ SUPPORT FILE ATTACHMENTS with the three-step Cloudinary upload.
+  ⑥ SHOW UPLOAD PROGRESS so the user knows something is happening.
+  ⑦ SHOW A FILE PREVIEW with a remove button.
+  ⑧ SHOW A BANNER when the socket is disconnected; still accept messages and
+     tell the user they will be sent when the connection returns.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ABOUT DRAFTS — HOW THEY WORK:
+  We store drafts in a Zustand store: a Map of conversationId → text.
+  When the composer component is removed from the screen (user switches chat),
+  it saves the current text to the draft store.
+  When the composer is shown again (same conversation), it reads the draft back
+  and pre-fills the textarea. Simple and reliable.
+
+ACTION: Create this file:  src/stores/draftStore.ts
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/stores/draftStore.ts  ──────────────────
+
+import { create } from "zustand";
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Stores per-conversation draft text in memory.
+// When the user switches chat, their unfinished message is preserved.
+// Drafts live in memory only — they clear on page refresh (intentional).
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface DraftState {
+  drafts: Map<string, string>;
+  setDraft:   (conversationId: string, text: string) => void;
+  getDraft:   (conversationId: string) => string;
+  clearDraft: (conversationId: string) => void;
+}
+
+export const useDraftStore = create<DraftState>((set, get) => ({
+  drafts: new Map(),
+
+  setDraft: (conversationId, text) =>
+    set((s) => {
+      const next = new Map(s.drafts);
+      next.set(conversationId, text);
+      return { drafts: next };
+    }),
+
+  getDraft: (conversationId) =>
+    get().drafts.get(conversationId) ?? "",
+
+  clearDraft: (conversationId) =>
+    set((s) => {
+      const next = new Map(s.drafts);
+      next.delete(conversationId);
+      return { drafts: next };
+    }),
+}));
+
+──────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/components/chat/Composer.tsx
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/components/chat/Composer.tsx  ──────────
+
+import {
+  useRef, useState, useEffect, useCallback,
+  ChangeEvent, KeyboardEvent,
+} from "react";
+import { v4 as uuidv4 }  from "uuid";
+import { Paperclip, Send, X, FileText } from "lucide-react";
+import { useAuthStore }  from "../../stores/authStore";
+import { useDraftStore } from "../../stores/draftStore";
+import { Message }       from "../../api/messages.api";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// The message composer at the bottom of the chat window.
+//
+// PROPS:
+//   conversationId   → which conversation we are in
+//   socket           → the Socket.IO socket instance
+//   isConnected      → whether the socket is currently connected
+//   onOptimisticSend → called immediately when Send is pressed, adds message
+//                      as PENDING so it appears instantly in the list
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+const API = import.meta.env.VITE_API_URL as string;
+
+// Allowed MIME types — must match the backend's allowed list exactly.
+const ALLOWED_TYPES = [
+  "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
+  "application/pdf", "text/plain", "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+];
+const MAX_FILE_BYTES = 10 * 1024 * 1024;  // 10 MB
+
+interface ComposerProps {
+  conversationId: string;
+  socket: import("socket.io-client").Socket | null;
+  isConnected: boolean;
+  onOptimisticSend: (message: Omit<Message, "sender">) => void;
+}
+
+export function Composer({
+  conversationId,
+  socket,
+  isConnected,
+  onOptimisticSend,
+}: ComposerProps) {
+  const token       = useAuthStore((s) => s.accessToken)!;
+  const currentUser = useAuthStore((s) => s.user)!;
+  const getDraft    = useDraftStore((s) => s.getDraft);
+  const setDraft    = useDraftStore((s) => s.setDraft);
+  const clearDraft  = useDraftStore((s) => s.clearDraft);
+
+  const textareaRef  = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Local state ──────────────────────────────────────────────────────────────
+  const [text, setText]                     = useState(() => getDraft(conversationId));
+  const [selectedFile, setSelectedFile]     = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadedUrl, setUploadedUrl]       = useState<string | null>(null);
+  const [uploadError, setUploadError]       = useState<string | null>(null);
+
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef    = useRef(false);
+
+  // ── Save draft when the user leaves this conversation ────────────────────────
+  useEffect(() => {
+    return () => {
+      // This cleanup runs when the component unmounts or conversationId changes.
+      const currentText = textareaRef.current?.value ?? "";
+      if (currentText.trim()) {
+        setDraft(conversationId, currentText);
+      } else {
+        clearDraft(conversationId);
+      }
+    };
+  }, [conversationId]);  // re-runs whenever conversationId changes
+
+  // ── Load the draft for the new conversation ───────────────────────────────────
+  useEffect(() => {
+    setText(getDraft(conversationId));
+    setSelectedFile(null);
+    setUploadedUrl(null);
+    setUploadProgress(null);
+    setUploadError(null);
+  }, [conversationId, getDraft]);
+
+  // ── Auto-grow the textarea ───────────────────────────────────────────────────
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text]);
+
+  // ── Typing events (throttled) ────────────────────────────────────────────────
+  const stopTyping = useCallback(() => {
+    if (!socket || !isConnected || !isTypingRef.current) return;
+    isTypingRef.current = false;
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    socket.emit("typing:stop", { conversationId });
+  }, [socket, isConnected, conversationId]);
+
+  const handleTypingStart = useCallback(() => {
+    if (!socket || !isConnected) return;
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      socket.emit("typing:start", { conversationId });
+    }
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => {
+      isTypingRef.current = false;
+      socket?.emit("typing:stop", { conversationId });
+    }, 3000);
+  }, [socket, isConnected, conversationId]);
+
+  // ── Text change ──────────────────────────────────────────────────────────────
+  const handleTextChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setText(val);
+    if (val.trim()) {
+      handleTypingStart();
+    } else {
+      stopTyping();
+    }
+  };
+
+  // ── Enter to send, Shift+Enter for new line ──────────────────────────────────
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+    // Shift+Enter: fall through — the browser adds a newline naturally.
+  };
+
+  // ── File selection ────────────────────────────────────────────────────────────
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Client-side validation before touching the network.
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      setUploadError("File type not allowed.");
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setUploadError("File is too large. Maximum size is 10 MB.");
+      return;
+    }
+
+    setSelectedFile(file);
+    setUploadError(null);
+    setUploadedUrl(null);
+    setUploadProgress(0);
+
+    // ── STEP 1: Get a signed upload URL from our backend ──────────────────────
+    let signData: {
+      uploadUrl: string;
+      publicUrl: string;
+      apiKey: string;
+      signature: string;
+      timestamp: number;
+      folder: string;
+      publicId: string;
+    };
+
+    try {
+      const res = await fetch(`${API}/api/uploads/sign`, {
+        method:  "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:  `Bearer ${token}`,
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          fileName:       file.name,
+          fileType:       file.type,
+          fileSize:       file.size,
+          conversationId: conversationId,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      const json = await res.json();
+      signData = json.data;
+    } catch {
+      setUploadError("Could not prepare upload. Try again.");
+      setUploadProgress(null);
+      return;
+    }
+
+    // ── STEP 2: Upload DIRECTLY to Cloudinary (NOT through our backend) ────────
+    // We use XMLHttpRequest so we can track progress — fetch does not support that.
+    const formData = new FormData();
+    formData.append("file",       file);
+    formData.append("api_key",    signData.apiKey);
+    formData.append("signature",  signData.signature);
+    formData.append("timestamp",  String(signData.timestamp));
+    formData.append("folder",     signData.folder);
+    formData.append("public_id",  signData.publicId);
+
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", signData.uploadUrl);
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          setUploadProgress(Math.round((event.loaded / event.total) * 100));
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          // STEP 3: Save the permanent public URL to include in the message.
+          setUploadedUrl(signData.publicUrl);
+          setUploadProgress(null);
+          resolve();
+        } else {
+          reject();
+        }
+      };
+
+      xhr.onerror = () => reject();
+      xhr.send(formData);
+    }).catch(() => {
+      setUploadError("Upload failed. Please try again.");
+      setUploadProgress(null);
+    });
+  };
+
+  // ── Remove attachment ─────────────────────────────────────────────────────────
+  const handleRemoveFile = () => {
+    setSelectedFile(null);
+    setUploadedUrl(null);
+    setUploadProgress(null);
+    setUploadError(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  // ── Send ──────────────────────────────────────────────────────────────────────
+  const handleSend = useCallback(() => {
+    const trimmedText = text.trim();
+    if (!trimmedText && !uploadedUrl) return;   // nothing to send
+    if (trimmedText.length > 2000) return;      // too long — backend will reject
+
+    // Generate a client-side UUID. This is REQUIRED — see frontend_context.txt §6.1.
+    // NEVER change this ID on retry. The server uses it for safe upsert.
+    const messageId = uuidv4();
+
+    const payload = {
+      id:             messageId,
+      conversationId: conversationId,
+      textBody:       trimmedText || null,
+      attachments:    uploadedUrl ? [uploadedUrl] : [],
+    };
+
+    // Optimistic UI: add the message as PENDING immediately so it appears
+    // in the list before the server responds.
+    onOptimisticSend({
+      id:             messageId,
+      conversationId: conversationId,
+      senderId:       currentUser.id,
+      textBody:       trimmedText || null,
+      attachments:    uploadedUrl ? [uploadedUrl] : [],
+      status:         "PENDING",
+      createdAt:      new Date().toISOString(),
+      editedAt:       null,
+      deletedAt:      null,
+    });
+
+    // Emit to socket. If disconnected, socket.io-client will buffer it.
+    if (socket) {
+      socket.emit("message:send", payload);
+    }
+
+    stopTyping();
+    setText("");
+    clearDraft(conversationId);
+    handleRemoveFile();
+  }, [
+    text, uploadedUrl, conversationId, socket,
+    currentUser.id, onOptimisticSend, stopTyping, clearDraft,
+  ]);
+
+  const canSend    = (text.trim().length > 0 || uploadedUrl !== null)
+                     && uploadProgress === null;
+  const isUploading = uploadProgress !== null;
+
+  return (
+    <div className="border-t border-border bg-card px-4 py-3 flex flex-col gap-2">
+
+      {/* Disconnected banner */}
+      {!isConnected && (
+        <div className="text-xs text-center text-muted-foreground bg-muted
+                        rounded-lg px-3 py-1.5">
+          You are offline — messages will be sent when your connection returns.
+        </div>
+      )}
+
+      {/* File preview */}
+      {selectedFile && (
+        <div className="flex items-center gap-2 bg-secondary rounded-xl px-3 py-2 text-sm">
+          <FileText size={16} className="text-muted-foreground shrink-0" />
+          <span className="flex-1 truncate text-foreground">{selectedFile.name}</span>
+
+          {/* Progress bar */}
+          {isUploading && uploadProgress !== null && (
+            <div className="w-20 h-1.5 bg-muted rounded-full overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-200"
+                style={{ width: `${uploadProgress}%` }}
+              />
+            </div>
+          )}
+
+          {/* Ready indicator */}
+          {uploadedUrl && !isUploading && (
+            <span className="text-xs text-green-500 font-medium shrink-0">✓ Ready</span>
+          )}
+
+          {/* Remove button */}
+          <button
+            onClick={handleRemoveFile}
+            aria-label="Remove attachment"
+            className="text-muted-foreground hover:text-destructive transition-colors"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
+      {/* Upload error */}
+      {uploadError && (
+        <p className="text-xs text-destructive">{uploadError}</p>
+      )}
+
+      {/* Input row */}
+      <div className="flex items-end gap-2">
+
+        {/* Attach button */}
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Attach a file"
+          disabled={isUploading}
+          className="text-muted-foreground hover:text-foreground transition-colors
+                     disabled:opacity-40 shrink-0 pb-2"
+        >
+          <Paperclip size={20} />
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ALLOWED_TYPES.join(",")}
+          className="hidden"
+          onChange={handleFileChange}
+        />
+
+        {/* Textarea — grows as you type, max ~5 lines */}
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={handleTextChange}
+          onKeyDown={handleKeyDown}
+          placeholder={isConnected ? "Message…" : "Offline — message will be queued"}
+          rows={1}
+          className="flex-1 resize-none bg-secondary text-foreground text-sm
+                     rounded-2xl px-4 py-2.5 outline-none
+                     placeholder:text-muted-foreground max-h-32 overflow-y-auto
+                     leading-relaxed focus:ring-2 focus:ring-ring/50 transition-shadow"
+          style={{ height: "auto" }}
+        />
+
+        {/* Send button */}
+        <button
+          onClick={handleSend}
+          disabled={!canSend}
+          aria-label="Send message"
+          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center
+                     bg-primary text-primary-foreground
+                     disabled:opacity-40 disabled:cursor-not-allowed
+                     hover:opacity-90 transition-opacity mb-0.5"
+        >
+          <Send size={16} />
+        </button>
+      </div>
+
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+  IMPORTANT NOTES ON THE COMPOSER:
+
+  1. THE THREE-STEP UPLOAD FLOW (wired inside handleFileChange):
+       Step 1 → POST /api/uploads/sign      → get signedUrl + publicUrl from backend
+       Step 2 → POST <signedUrl> (Cloudinary) → upload file directly (NOT via backend)
+       Step 3 → include publicUrl in attachments[] when sending the message
+
+  2. WHY XMLHttpRequest AND NOT fetch FOR THE CLOUDINARY UPLOAD?
+     The Fetch API does not support upload progress events yet in most browsers.
+     We use XMLHttpRequest specifically to get  xhr.upload.onprogress  so we can
+     show the progress bar to the user.
+
+  3. CLIENT-GENERATED UUID — CRITICAL RULE:
+     The message ID is generated by uuidv4() on the CLIENT before emitting.
+     This is required — see frontend_context.txt §6.1.
+     Never let the server generate the ID.
+     Never change the ID on retry (the server uses it for safe upsert).
+
+  4. DRAFT PERSISTENCE:
+     The useEffect cleanup (the return function) saves the draft when the
+     component unmounts or when conversationId changes.
+     A second useEffect reads the draft when conversationId changes.
+     Drafts live in memory only — they are cleared on page refresh, which is fine.
+
+  5. DISCONNECTED STATE:
+     When isConnected is false, the banner explains what is happening.
+     Messages still appear as PENDING via onOptimisticSend.
+     The socket.io-client library internally buffers emitted events when disconnected
+     and replays them on reconnect. Your parent's reconnect handler (Part 10 in
+     frontend_context.txt) should also flush any explicitly queued messages.
+
+✅ DONE WHEN:
+   • Typing and pressing Enter sends the message.
+   • Shift+Enter adds a new line instead of sending.
+   • The textarea grows as you type and stops at ~5 lines.
+   • The Send button is disabled when the textarea is empty and no file is chosen.
+   • Clicking the paperclip opens a file picker.
+   • A file that is the wrong type OR is larger than 10 MB shows an error instantly
+     — no network request is made.
+   • The progress bar moves during upload. "✓ Ready" appears when done.
+   • Clicking X on the file preview removes the attachment.
+   • Switching to another conversation and coming back restores the unfinished text.
+   • When the socket is disconnected, the banner appears. The message still shows
+     as PENDING and gets sent when the connection returns.
+   • Sending works with text only, with a file only, and with text + file together.
+
+================================================================================
+
+FINAL CHECKLIST — PART 22
+================================================================================
+
+Step 22.1 — Chat Header:
+  [ ] src/components/chat/ChatHeader.tsx created
+  [ ] Shows avatar, name, and status line for DMs (typing / online / last seen)
+  [ ] Shows member count for groups; tapping opens the member list
+  [ ] Status line updates live — no page refresh needed
+  [ ] Back arrow shows on mobile when onBack prop is provided
+  [ ] No TypeScript errors
+
+Step 22.2 — Message History:
+  [ ] src/api/messages.api.ts created with fetchMessages()
+  [ ] src/hooks/useMessageHistory.ts created using useInfiniteQuery
+  [ ] Messages are reversed to oldest-first before rendering
+  [ ] src/components/chat/MessageListSkeleton.tsx created
+  [ ] src/components/chat/EmptyConversation.tsx created
+  [ ] TEST: Open a seeded conversation → 50 newest messages at the bottom ✓
+  [ ] TEST: Open a brand-new conversation → EmptyConversation screen shows ✓
+  [ ] TEST: Loading state → grey placeholder bubbles appear ✓
+
+Step 22.3 — Scrolling:
+  [ ] src/hooks/useScrollManager.ts created
+  [ ] src/components/chat/MessageList.tsx created
+  [ ] Situation 1: First load jumps to bottom instantly (no animation) ✓
+  [ ] Situation 2: New message while at bottom → smooth scroll to it ✓
+  [ ] Situation 3: New message while scrolled up → pill appears; view stays put ✓
+  [ ] Situation 4: Loading older messages → content does NOT jump ✓
+  [ ] TEST: Load 3 pages of history; all four situations still work correctly ✓
+
+Step 22.4 — Message Bubble:
+  [ ] src/utils/messageGrouping.ts created with buildMessageGroups()
+  [ ] src/components/chat/MessageBubble.tsx created
+  [ ] Own messages: right-aligned, primary brand colour ✓
+  [ ] Other messages: left-aligned, secondary neutral colour ✓
+  [ ] Status ticks (✓ / ✓✓ / blue ✓✓) on own messages only ✓
+  [ ] Deleted message shows "Message deleted" placeholder ✓
+  [ ] Edited message shows "edited" label ✓
+  [ ] Groups: sender name + avatar on first bubble of a run only ✓
+  [ ] Date dividers appear: "Today", "Yesterday", or the date ✓
+  [ ] Image attachments: thumbnail; click opens full image in new tab ✓
+  [ ] File attachments: card with filename and download icon ✓
+
+Step 22.5 — Composer:
+  [ ] src/stores/draftStore.ts created
+  [ ] src/components/chat/Composer.tsx created
+  [ ] Textarea grows as you type, stops at ~5 lines ✓
+  [ ] Enter sends, Shift+Enter adds a new line ✓
+  [ ] Send button is disabled when nothing to send ✓
+  [ ] Attachment button opens file picker ✓
+  [ ] Wrong file type or >10 MB shows an error instantly (no network call) ✓
+  [ ] Progress bar moves during upload ✓
+  [ ] File preview shows "✓ Ready" after upload completes ✓
+  [ ] X button removes the attachment ✓
+  [ ] Draft is saved when switching conversations and restored on return ✓
+  [ ] Disconnected banner shows when socket is offline ✓
+  [ ] Messages appear as PENDING while offline ✓
+  [ ] TEST: Send with text only ✓
+  [ ] TEST: Send with image file only ✓
+  [ ] TEST: Send with text + image ✓
+
+================================================================================
+
+FILE MAP — WHAT YOU CREATED IN PART 22
+================================================================================
+
+  src/
+  ├── api/
+  │   └── messages.api.ts              ← fetchMessages() — history REST call + Message type
+  │
+  ├── hooks/
+  │   ├── useMessageHistory.ts         ← useInfiniteQuery wrapper, handles pagination
+  │   └── useScrollManager.ts          ← The four scroll situations
+  │
+  ├── stores/
+  │   └── draftStore.ts                ← Per-conversation draft text (in memory)
+  │
+  ├── utils/
+  │   └── messageGrouping.ts           ← Date dividers + consecutive run grouping
+  │
+  └── components/
+      └── chat/
+          ├── ChatHeader.tsx           ← Name, avatar, live status line, member list
+          ├── MessageList.tsx          ← Scrollable container, all four scroll cases
+          ├── MessageListSkeleton.tsx  ← Grey placeholder bubbles while loading
+          ├── EmptyConversation.tsx    ← Shown when a chat has zero messages yet
+          ├── MessageBubble.tsx        ← Individual message: text, attachments, ticks
+          └── Composer.tsx             ← Text input, file upload, send button, drafts
+
+================================================================================
+
+COMMON PROBLEMS AND FIXES
+================================================================================
+
+PROBLEM: Messages appear with the newest at the TOP instead of the bottom.
+FIX:     In useMessageHistory.ts make sure you are doing TWO reverses:
+           1. .slice().reverse() on the pages array  → oldest page first
+           2. .slice().reverse() on each page's messages → oldest message first
+         If you only reverse one of them, the order will still be wrong.
+
+PROBLEM: When I load older messages (scroll to top), the view jumps down.
+FIX:     captureHeight() must be called BEFORE React inserts the new messages.
+         restoreHeight() must be called AFTER the messages are in the DOM.
+         In MessageList.tsx the order is:
+           captureHeight() → call loadMore() → .then(() => restoreHeight())
+         If restoreHeight runs before the DOM updates, the height difference
+         will be 0 and the correction will do nothing.
+
+PROBLEM: The "New messages" pill never disappears after I scroll to the bottom.
+FIX:     The onScroll handler must be on the scrollable <div> that has
+         ref={containerRef} — NOT on any outer wrapper div.
+         Make sure handleScroll is passed as the onScroll prop to that exact element.
+
+PROBLEM: Status ticks never update from ✓ to ✓✓ or blue ✓✓.
+FIX:     Your socket listener for "message:status" must update the message in
+         your liveMessages array or message store. Remember the rule:
+           ONLY update if the new status is HIGHER than the current one.
+           SENT < DELIVERED < READ — never go backwards.
+         See frontend_context.txt §7.3.
+
+PROBLEM: Upload progress bar stays at 0% then jumps straight to 100%.
+FIX:     Make sure you are using XMLHttpRequest for the Cloudinary upload —
+         NOT the fetch API. Only XHR exposes  xhr.upload.onprogress.
+         In Composer.tsx we use XHR specifically for this reason.
+
+PROBLEM: Message is sent but the other person sees no attachment.
+FIX:     You must include signData.publicUrl in the message's attachments[] array —
+         NOT the uploadUrl. The uploadUrl is a temporary signed POST endpoint that
+         expires in 10 minutes. publicUrl is the permanent Cloudinary URL.
+
+PROBLEM: Switching conversations does not restore my draft.
+FIX:     The draft is saved in the useEffect cleanup in Composer.tsx.
+         Make sure conversationId is listed in that useEffect's dependency array.
+         Also confirm each chat renders a SEPARATE Composer instance
+         (not one shared instance) so the unmount/mount cycle actually happens.
+
+PROBLEM: TypeScript error: "Property 'presenceMap' does not exist on type ...".
+FIX:     Make sure your presenceStore exports presenceMap as a Map<string, { online: boolean; lastSeen: string | null }>.
+         The ChatHeader component reads from it with:
+           presenceMap.get(userId)?.online
+           presenceMap.get(userId)?.lastSeen
+         If your store uses a different shape, adjust the ChatHeader reads to match.
+
+PROBLEM: The textarea does not grow — it stays at one line.
+FIX:     The auto-grow logic runs inside a useEffect that depends on [text].
+         Make sure  text  is the controlled state bound to the textarea's value.
+         Also make sure the textarea does NOT have a fixed height in CSS.
+         The Tailwind class  max-h-32  sets the ceiling only. The default height
+         should be "auto" or a small value — not a fixed number like "40px".
+
+PROBLEM: VITE_API_URL is undefined.
+FIX:     Create a  .env  file in your frontend/ root with:
+           VITE_API_URL=http://localhost:4000
+         Restart the Vite dev server after adding it.
+         Vite only exposes variables that start with  VITE_  to the browser.
+
+================================================================================
+END OF PART 22 GUIDE
+================================================================================
