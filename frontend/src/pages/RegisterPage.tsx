@@ -76,7 +76,7 @@ export function RegisterPage() {
 
       // ── 3. The backend registers AND logs us in in one step ───────────────
       setSession(user, accessToken);
-      navigate("/chat", { replace: true });
+      navigate("/", { replace: true });
 
     } catch (err: unknown) {
       // Could be "email already taken", "username already taken", etc.
