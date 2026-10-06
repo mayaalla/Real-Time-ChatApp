@@ -179,3 +179,10 @@
     letter-spacing: var(--tracking-normal);
   }
 }
+
+
+@media (max-width: 768px) {
+  .hide-on-mobile {
+    display: none !important;
+  }
+}
