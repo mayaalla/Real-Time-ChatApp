@@ -21,8 +21,8 @@ import { NewChatDialog }             from "./NewChatDialog";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function ConversationSidebar() {
-  const token        = useAuthStore((s) => s.accessToken)!;
-  const currentUser  = useAuthStore((s) => s.user)!;
+  const token        = useAuthStore((s) => s.accessToken);
+  const currentUser  = useAuthStore((s) => s.user);
   const { conversations, setAll } = useConversationStore();
 
   const [searchQuery, setSearchQuery]   = useState("");
@@ -31,11 +31,20 @@ export function ConversationSidebar() {
 
   // ── Fetch conversation list once on mount ─────────────────────────────────
   useEffect(() => {
+    // Don't attempt the fetch until the session has been restored
+    if (!token) return;
+
     fetchConversations(token)
       .then((list) => setAll(list as Parameters<typeof setAll>[0]))
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [token, setAll]);
+
+  // ── Guard: session not yet restored → render nothing ─────────────────────
+  // PrivateRoute shows <LoadingScreen /> during this window, but as a
+  // belt-and-suspenders safety net we bail out here too so we never try to
+  // read properties off a null user/token.
+  if (!currentUser || !token) return null;
 
   // ── Filter by search query (client-side, instant) ─────────────────────────
   const filtered = conversations.filter((c) =>
@@ -158,7 +167,7 @@ export function ConversationSidebar() {
               fontSize:       "0.75rem",
             }}
           >
-            {currentUser.username[0]?.toUpperCase()}
+            {(currentUser.username?.[0] ?? "?").toUpperCase()}
           </div>
         )}
         <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>

@@ -1,0 +1,1521 @@
+================================================================================
+  PART 23 — FRONTEND REALTIME LAYER AND STATE OWNERSHIP
+  Step-by-step guide written in simple language
+  Your project: /media/maya/A4E6D724E6D6F610/Maya/Chatapp/frontend
+================================================================================
+
+BEFORE YOU START — CHECKLIST
+────────────────────────────────────────
+Make sure ALL of these are true before touching a single file here:
+
+  [ ] Part 22 is fully done  (ChatHeader, MessageList, MessageBubble, Composer
+        all work correctly and show in the browser)
+  [ ] Your backend is running on http://localhost:4000
+  [ ] These packages are installed:
+        socket.io-client       (for the socket connection)
+        zustand                (for connection status, typing, presence stores)
+        uuid                   (for client-side message IDs)
+        @tanstack/react-query  (for the message cache)
+              → verify with:  cat package.json | grep -E "socket|zustand|uuid|react-query"
+  [ ] You can open a conversation and see messages in the browser
+
+If any of those are not true, finish the earlier parts first.
+
+================================================================================
+
+PART 23 — FRONTEND REALTIME LAYER AND STATE OWNERSHIP
+
+GOAL: The socket and the React Query cache NEVER fight each other.
+      Messages NEVER duplicate. Messages NEVER arrive out of order.
+      The connection status is always visible to the user.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THE CORE PROBLEM — READ THIS FIRST, IT EXPLAINS EVERYTHING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Imagine you have two workers: one (React Query) loads old messages from the
+server using HTTP. Another worker (the socket) delivers new messages in real
+time. If both workers write to the SAME list without checking what is already
+there, you get duplicates. If they write to DIFFERENT lists, you have to merge
+them and things get complicated.
+
+The solution is to give each worker ONE JOB and ONE TERRITORY:
+
+  Worker A — React Query:
+    Owns the message history cache.
+    Reads from the server's REST endpoint.
+    Keeps all loaded messages, sorted, in its internal cache.
+
+  Worker B — the Socket:
+    Delivers LIVE messages as they arrive.
+    Writes those live messages DIRECTLY into React Query's cache.
+    It does NOT create a separate list.
+
+  Worker C — Zustand:
+    Tracks everything the server does NOT store:
+      "is the socket connected right now?"
+      "who is typing in each conversation?"
+      "who is online right now?"
+      "what messages are queued to send while offline?"
+
+  THE ONE RULE that makes it all safe:
+    Before writing any message to the cache, CHECK its ID.
+    If the ID already exists → skip it.
+    This single check is what prevents every duplicate.
+
+Think of it like a librarian who receives new books. Before placing a book on
+the shelf, she checks the ISBN. If that ISBN is already on the shelf, she
+discards the duplicate. Without that check, the same book ends up on the
+shelf twice.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT FILES YOU WILL CREATE IN THIS PART
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  src/constants/events.ts               <- all event name constants (no hand-typed strings)
+  src/lib/socket.ts                     <- the ONE socket instance for the whole app
+  src/stores/connectionStore.ts         <- Zustand: "connected", "reconnecting", etc.
+  src/hooks/useSocketConnection.ts      <- connects / disconnects / handles lifecycle
+  src/hooks/useSocketEvents.ts          <- registers ALL server->client listeners
+  src/hooks/useRoomManager.ts           <- joins/leaves conversation rooms
+  src/utils/messageCache.ts             <- helpers: write a message into React Query cache
+  src/components/shared/ConnectionBanner.tsx  <- the "Reconnecting..." banner
+
+  You will also UPDATE:
+    src/hooks/useMessageHistory.ts  (from Part 22)  — add a sort step
+    src/components/chat/Composer.tsx (from Part 22) — ensure optimistic write goes to cache
+    src/App.tsx or your root layout                 — mount the socket hooks once
+
+================================================================================
+
+STEP 23.1 — WRITE THE OWNERSHIP RULES
+================================================================================
+
+UNDERSTAND WHAT WE ARE DOING HERE:
+  Before writing any code, the rules must be written down so every developer
+  (including future-you) will read them. We put them in two places:
+    1. At the top of the main socket hook file (as a code comment).
+    2. In your README.md so anyone reading the project knows the design.
+
+  THE FOUR RULES (write these EXACTLY — word for word):
+
+    RULE 1: React Query owns history.
+            All loaded messages live in its cache, keyed by conversation.
+
+    RULE 2: The socket owns the live tail.
+            An incoming message is written INTO the React Query cache,
+            never into a separate list held in component state.
+
+    RULE 3: Zustand owns only what the server does not store:
+            connection status, which users are typing, the presence map,
+            and the queue of unsent messages.
+
+    RULE 4: Every cache write de-duplicates by message identifier.
+            This one rule is what makes optimistic sending safe.
+
+  WHY EACH RULE EXISTS:
+
+    Without Rule 1: you have two sources of truth for message history
+    and they drift apart (one has 50 messages, the other has 48).
+
+    Without Rule 2: live messages go into component state and when the
+    component unmounts (user navigates away), the live tail is lost.
+
+    Without Rule 3: you put connection status into React Query, causing
+    unnecessary network requests. Or you put it in a plain variable and
+    React cannot re-render when it changes.
+
+    Without Rule 4: you get the "message appears twice" bug that makes
+    users think the app is broken. This is the most common real-time bug.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Open (or create) the file  README.md  in your project root.
+        Add this section at the very top of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+──────────────────── ADD THIS TO THE TOP OF README.md ──────────────────────────
+
+## State Ownership Rules (Realtime Layer)
+
+These four rules govern how data flows in this application.
+Do not violate them. They prevent duplicate messages and out-of-order state.
+
+1. **React Query owns history.**
+   All loaded messages live in its cache, keyed by conversation.
+
+2. **The socket owns the live tail.**
+   An incoming message is written INTO the React Query cache,
+   never into a separate list held in component state.
+
+3. **Zustand owns only what the server does not store:**
+   connection status, which users are typing, the presence map,
+   and the queue of unsent messages.
+
+4. **Every cache write de-duplicates by message identifier.**
+   This one rule is what makes optimistic sending safe.
+
+────────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • README.md has the four rules section at the top.
+   • (We will add the same four rules as a comment in the socket hook in Step 23.2.)
+
+================================================================================
+
+STEP 23.2 — BUILD THE SOCKET CONNECTION MANAGER
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  We need ONE socket that the whole application shares. Think of it like a
+  telephone line in a house. There is only one line. Every room (component)
+  picks up the same phone. You do NOT install a new phone line in each room.
+
+  If you create a socket inside a component, a new socket is created every
+  time that component mounts. When it unmounts, the socket is destroyed. This
+  means you reconnect on every navigation — slow and wrong.
+
+  Instead, we create the socket once in a module-level file (src/lib/socket.ts)
+  and export it. Any file that imports it gets the exact same socket instance.
+
+  THE LIFECYCLE:
+    App starts         → user is not logged in → socket is NOT connected.
+    User logs in       → we call socket.connect() with their token.
+    User navigates     → socket stays open.
+    User logs out      → we call socket.disconnect().
+    Page closes        → socket.disconnect() runs in cleanup.
+
+  THE CONNECTION STATUS BANNER:
+    We store the connection status in Zustand so any component can read it.
+    The "Reconnecting..." banner is shown when status = "reconnecting".
+    The banner disappears when status = "connected".
+    Test this by disabling the network in DevTools → the banner appears.
+    Re-enable the network → the banner disappears.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/constants/events.ts
+────────────────────────────────────────────────────────────────────────────────
+
+  WHY THIS FILE?
+    Every event name is a plain string. If you type "messag:new" (missing an
+    'e') in one file, the listener silently receives nothing — no error, no
+    warning, just silence. Constants give you autocomplete and catch typos.
+
+────────────────── PASTE THIS INTO  src/constants/events.ts  ───────────────────
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Single source of truth for ALL Socket.IO event name strings.
+// NEVER type these strings by hand anywhere else in the codebase.
+// Import from here:
+//   import { ClientEvents, ServerEvents } from "../constants/events";
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Events YOU emit (client → server)
+export const ClientEvents = {
+  CONVERSATION_JOIN:  "conversation:join",
+  CONVERSATION_LEAVE: "conversation:leave",
+  MESSAGE_SEND:       "message:send",
+  MESSAGE_READ:       "message:read",
+  TYPING_START:       "typing:start",
+  TYPING_STOP:        "typing:stop",
+  SYNC_SINCE:         "sync:since",
+  PRESENCE_FETCH:     "presence:fetch",
+} as const;
+
+// Events YOU receive (server → client)
+export const ServerEvents = {
+  MESSAGE_NEW:            "message:new",
+  MESSAGE_STATUS:         "message:status",
+  TYPING_UPDATE:          "typing:update",
+  PRESENCE_UPDATE:        "presence:update",
+  PRESENCE_SNAPSHOT:      "presence:snapshot",
+  CONVERSATION_CREATED:   "conversation:created",
+  CONVERSATION_JOINED:    "conversation:joined",
+  CONVERSATION_UNREAD:    "conversation:unread_count",
+  SYNC_MESSAGES:          "sync:messages",
+  SYNC_RELOAD:            "sync:reload",
+  CONNECT:                "connect",
+  DISCONNECT:             "disconnect",
+  CONNECT_ERROR:          "connect_error",
+  RECONNECT_ATTEMPT:      "reconnect_attempt",
+  RECONNECT:              "reconnect",
+  ERROR:                  "error",
+} as const;
+
+──────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/lib/socket.ts
+────────────────────────────────────────────────────────────────────────────────
+
+  WHY A SEPARATE FILE?
+    This is the "one socket for the whole app" pattern. We create the socket
+    here, NOT yet connected. We connect it in useSocketConnection (next step).
+
+────────────────── PASTE THIS INTO  src/lib/socket.ts  ─────────────────────────
+
+import { io, Socket } from "socket.io-client";
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Creates the single Socket.IO socket instance for the whole application.
+// Import `socket` wherever you need to emit or listen.
+//
+// IMPORTANT: The socket is created with autoConnect: false.
+// It does NOT connect until useSocketConnection calls socket.connect().
+// This is intentional — we only connect AFTER the user is authenticated.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SOCKET_URL = import.meta.env.VITE_API_URL as string;
+
+export const socket: Socket = io(SOCKET_URL, {
+  // Do not connect automatically on import.
+  // We call socket.connect() manually after the user logs in.
+  autoConnect: false,
+
+  // Token placeholder — updated before each connection.
+  // useSocketConnection sets socket.auth = { token: <real token> }
+  // before calling socket.connect().
+  auth: { token: "" },
+
+  // REQUIRED: skip HTTP polling, use WebSocket directly.
+  // The backend is designed for WebSocket only (no sticky sessions).
+  transports: ["websocket"],
+
+  // Reconnection settings
+  reconnection:           true,
+  reconnectionDelay:      1_000,    // wait 1s before first retry
+  reconnectionDelayMax:   10_000,   // wait at most 10s between retries
+  reconnectionAttempts:   Infinity, // keep trying forever
+});
+
+──────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/stores/connectionStore.ts
+────────────────────────────────────────────────────────────────────────────────
+
+  WHY ZUSTAND FOR CONNECTION STATUS?
+    The status changes independently of any React component. We need every
+    part of the app (chat window, composer, a global banner) to know the
+    same status. Zustand is a global store — perfect for this.
+
+────────────────── PASTE THIS INTO  src/stores/connectionStore.ts  ─────────────
+
+import { create } from "zustand";
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Stores the current socket connection status.
+// Any component that needs to show "Reconnecting..." reads from here.
+// The useSocketConnection hook writes to this store.
+//
+// STATUS VALUES:
+//   "connected"    → socket is open and working
+//   "disconnected" → socket is closed (not trying to reconnect yet)
+//   "reconnecting" → socket lost connection and is actively retrying
+//   "error"        → connection failed with an unrecoverable error
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ConnectionStatus =
+  | "connected"
+  | "disconnected"
+  | "reconnecting"
+  | "error";
+
+interface ConnectionState {
+  status:    ConnectionStatus;
+  setStatus: (status: ConnectionStatus) => void;
+}
+
+export const useConnectionStore = create<ConnectionState>((set) => ({
+  status:    "disconnected",
+  setStatus: (status) => set({ status }),
+}));
+
+──────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/hooks/useSocketConnection.ts
+────────────────────────────────────────────────────────────────────────────────
+
+  WHAT THIS HOOK DOES:
+    1. Reads the access token from the auth store.
+    2. If the user is authenticated, sets the token on the socket and connects.
+    3. Listens to all lifecycle events and updates the Zustand connection store.
+    4. When the access token disappears (logout) or the component unmounts
+       (page closes), disconnects the socket cleanly.
+
+  WHERE TO MOUNT THIS HOOK:
+    Mount it ONCE in your root App component or your authenticated layout.
+    Do NOT call it inside individual chat components.
+
+────────────────── PASTE THIS INTO  src/hooks/useSocketConnection.ts  ──────────
+
+import { useEffect } from "react";
+import { socket }             from "../lib/socket";
+import { useAuthStore }       from "../store/authStore";
+import { useConnectionStore } from "../store/connectionStore";
+import { ServerEvents }       from "../constants/events";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// STATE OWNERSHIP RULES (do not remove this comment):
+//   RULE 1: React Query owns history — all loaded messages live in its cache.
+//   RULE 2: The socket owns the live tail — incoming messages go INTO the
+//           React Query cache, never into a separate component state list.
+//   RULE 3: Zustand owns only what the server does not store: connection
+//           status, typing indicators, presence map, unsent message queue.
+//   RULE 4: Every cache write de-duplicates by message identifier.
+//
+// Manages the socket lifecycle:
+//   - Connects after the user authenticates (access token is present).
+//   - Updates Zustand connectionStore on every lifecycle event.
+//   - Handles token refresh when the server rejects the token on connect.
+//   - Disconnects on logout (accessToken becomes null) and on unmount.
+//
+// Mount this hook ONCE in your root App or authenticated layout.
+// Never call it inside individual chat screens.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function useSocketConnection() {
+  const accessToken  = useAuthStore((s) => s.accessToken);
+  const refreshToken = useAuthStore((s) => s.refreshToken); // your refresh action
+  const setStatus    = useConnectionStore((s) => s.setStatus);
+
+  useEffect(() => {
+    // If there is no access token, stay disconnected.
+    // This happens before login and after logout.
+    if (!accessToken) {
+      socket.disconnect();
+      setStatus("disconnected");
+      return;
+    }
+
+    // Set the token and connect.
+    // We update auth BEFORE connecting so the server gets the correct token
+    // on the very first handshake.
+    socket.auth = { token: accessToken };
+    socket.connect();
+
+    // ── Lifecycle event handlers ───────────────────────────────────────────────
+
+    function onConnect() {
+      setStatus("connected");
+    }
+
+    function onDisconnect(reason: string) {
+      // "io server disconnect" = the server kicked us intentionally.
+      // All other reasons (transport close, ping timeout, etc.) trigger auto-reconnect.
+      if (reason === "io server disconnect") {
+        setStatus("disconnected");
+      } else {
+        // socket.io-client will auto-reconnect.
+        // Status becomes "reconnecting" once a reconnect_attempt fires.
+        setStatus("reconnecting");
+      }
+    }
+
+    async function onConnectError(err: Error) {
+      if (err.message.includes("AUTH_MISSING")) {
+        // No token — something is wrong with auth state.
+        setStatus("error");
+        return;
+      }
+
+      if (
+        err.message.includes("AUTH_INVALID") ||
+        err.message.includes("TOKEN_EXPIRED")
+      ) {
+        // Our token expired mid-session. Try to refresh it silently.
+        try {
+          await refreshToken(); // POST /api/auth/refresh — updates accessToken in store
+          const newToken = useAuthStore.getState().accessToken;
+          if (newToken) {
+            socket.auth = { token: newToken };
+            socket.connect();
+          }
+        } catch {
+          // Refresh also failed — session truly expired.
+          // The auth store should redirect to login.
+          setStatus("error");
+        }
+      }
+    }
+
+    function onReconnectAttempt() {
+      setStatus("reconnecting");
+    }
+
+    function onReconnect() {
+      // The "connect" event also fires after reconnect and sets status to
+      // "connected" — we let that handler do it to keep one source of truth.
+    }
+
+    // ── Register all listeners ─────────────────────────────────────────────────
+    socket.on(ServerEvents.CONNECT,           onConnect);
+    socket.on(ServerEvents.DISCONNECT,        onDisconnect);
+    socket.on(ServerEvents.CONNECT_ERROR,     onConnectError);
+    socket.on(ServerEvents.RECONNECT_ATTEMPT, onReconnectAttempt);
+    socket.on(ServerEvents.RECONNECT,         onReconnect);
+
+    // ── Cleanup: remove listeners and disconnect ───────────────────────────────
+    // Runs when accessToken becomes null (logout) or the component unmounts.
+    return () => {
+      socket.off(ServerEvents.CONNECT,           onConnect);
+      socket.off(ServerEvents.DISCONNECT,        onDisconnect);
+      socket.off(ServerEvents.CONNECT_ERROR,     onConnectError);
+      socket.off(ServerEvents.RECONNECT_ATTEMPT, onReconnectAttempt);
+      socket.off(ServerEvents.RECONNECT,         onReconnect);
+      socket.disconnect();
+    };
+  }, [accessToken]); // Re-run when the user logs in or logs out
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+  HOW TO MOUNT THIS HOOK:
+    Open src/App.tsx (or whatever your root component is).
+    Add ONE call to useSocketConnection() inside the root component body.
+
+    ─── IN src/App.tsx ─────────────────────────────────────────────────────────
+    import { useSocketConnection } from "./hooks/useSocketConnection";
+
+    export function App() {
+      useSocketConnection();   // <- add this one line at the top level
+      // ... rest of your app (Router, routes, etc.)
+    }
+    ────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/components/shared/ConnectionBanner.tsx
+────────────────────────────────────────────────────────────────────────────────
+
+  This is the banner that appears at the top of the app when the socket is
+  reconnecting. The user sees it when they lose their network.
+
+────────────────── PASTE THIS INTO  src/components/shared/ConnectionBanner.tsx  ─
+
+import { useConnectionStore } from "../../stores/connectionStore";
+
+// ─── ConnectionBanner ────────────────────────────────────────────────────────
+//
+// Shows a "Reconnecting..." strip at the top of the screen when the socket
+// is not connected. Reads from the Zustand connectionStore.
+// Render this once in your authenticated layout — above the sidebar and chat.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function ConnectionBanner() {
+  const status = useConnectionStore((s) => s.status);
+
+  if (status === "connected") return null; // nothing to show when connected
+
+  const messages: Record<string, string> = {
+    disconnected: "You are disconnected. Trying to reconnect...",
+    reconnecting: "Reconnecting...",
+    error:        "Connection failed. Please refresh the page.",
+  };
+
+  const label = messages[status] ?? "Connecting...";
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="w-full bg-destructive/90 text-destructive-foreground
+                 text-xs text-center py-1.5 px-4 font-medium z-50"
+    >
+      {label}
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+  WHERE TO RENDER THE BANNER:
+    In your authenticated layout — the component that wraps the sidebar and
+    the chat window. Place it at the very top, before the main content.
+
+    ─── EXAMPLE in your layout component ───────────────────────────────────────
+    import { ConnectionBanner } from "./components/shared/ConnectionBanner";
+
+    function ChatLayout() {
+      return (
+        <div className="flex flex-col h-screen">
+          <ConnectionBanner />          {/* <- add this */}
+          <div className="flex flex-1 overflow-hidden">
+            {/* sidebar, chat window, etc. */}
+          </div>
+        </div>
+      );
+    }
+    ────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Disable your network (DevTools > Network > Offline) → "Reconnecting..."
+     banner appears within a few seconds.
+   • Re-enable the network → banner disappears.
+   • Logging out disconnects the socket (verify: DevTools > Network tab >
+     the WebSocket frame stops after logout).
+   • No TypeScript errors.
+
+================================================================================
+
+STEP 23.3 — BUILD THE EVENT LISTENER HOOK
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  Every event the server sends us needs a listener. The critical mistake most
+  developers make is registering listeners in multiple places, or inside a
+  component without ever cleaning them up.
+
+  WHY DUPLICATED LISTENERS ARE DANGEROUS:
+    When you call socket.on("message:new", handler) and the component
+    re-renders or hot-reloads (you save the file in your editor), the listener
+    is registered AGAIN on the same socket. Now you have TWO listeners.
+    Save again → THREE listeners. Each new message fires all three, so each
+    message appears three times.
+
+    The fix: always pair every socket.on(...) with socket.off(...) in the
+    useEffect cleanup function that runs when the hook unmounts.
+
+  WHAT EACH EVENT DOES:
+
+    message:new          Write the message into the React Query cache.
+                         De-duplicate first by ID (Rule 4).
+                         Also invalidate the conversation list so its
+                         "last message" preview updates.
+
+    message:status       Update that message's delivery/read tick in the cache.
+                         ONLY upgrade status — never downgrade.
+                         (SENT < DELIVERED < READ)
+
+    typing:update        Write the list of typing user IDs to Zustand.
+                         Filter out our own ID first.
+
+    presence:update      Write one user's online/offline status to Zustand.
+
+    presence:snapshot    Replace the full presence map in Zustand.
+                         Sent by the server right after we connect.
+
+    conversation:created Invalidate the conversation list so it re-fetches.
+
+    sync:messages        Merge missed messages (received after reconnect)
+                         into the cache. De-duplicate each one by ID.
+
+    sync:reload          The server has too many missed messages (>200).
+                         Invalidate the cache and re-fetch via REST.
+
+    error                Log the error. Add a toast if you have a library.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/utils/messageCache.ts
+────────────────────────────────────────────────────────────────────────────────
+
+  WHY A SEPARATE FILE?
+    Writing a message into the React Query cache is 5-10 lines every time.
+    Instead of repeating that logic everywhere, we put it in one helper.
+    This helper also contains the all-important de-duplication check.
+
+────────────────── PASTE THIS INTO  src/utils/messageCache.ts  ─────────────────
+
+import { QueryClient } from "@tanstack/react-query";
+import { Message, MessagesPage } from "../api/messages.api";
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Helpers for writing messages INTO the React Query cache.
+// The socket hook uses these instead of duplicating cache-update logic.
+//
+// OWNERSHIP RULE 2: The socket NEVER holds messages in a separate list.
+// It writes directly into the React Query cache and returns.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── appendMessageToCache ─────────────────────────────────────────────────────
+// Inserts one message at the start of the first page (which holds the newest
+// messages) for its conversation.
+// If the message ID already exists anywhere in the cache, it is skipped.
+// This is RULE 4: de-duplicate by ID at every write.
+export function appendMessageToCache(
+  queryClient: QueryClient,
+  message: Message
+): void {
+  const key = ["messages", message.conversationId];
+
+  queryClient.setQueryData<{ pages: MessagesPage[]; pageParams: unknown[] }>(
+    key,
+    (old) => {
+      if (!old) return old;
+
+      // ── De-duplication check (RULE 4 — THE critical rule) ─────────────────
+      const alreadyExists = old.pages.some((page) =>
+        page.messages.some((m) => m.id === message.id)
+      );
+      if (alreadyExists) return old; // skip — we already have this message
+
+      // ── Append to the first page (which holds the newest messages) ─────────
+      const updatedFirstPage: MessagesPage = {
+        ...old.pages[0],
+        messages: [message, ...old.pages[0].messages],
+      };
+
+      return {
+        ...old,
+        pages: [updatedFirstPage, ...old.pages.slice(1)],
+      };
+    }
+  );
+}
+
+// ── replaceOrAppendMessageInCache ─────────────────────────────────────────────
+// Used when the server confirms a message we optimistically added as PENDING.
+// If the message is found → replaces it IN PLACE (same position, no jump).
+// If the message is NOT found → appends it as a new message.
+// Returns true if a replacement happened, false if it was a new append.
+export function replaceOrAppendMessageInCache(
+  queryClient: QueryClient,
+  message: Message
+): boolean {
+  const key = ["messages", message.conversationId];
+  let found = false;
+
+  queryClient.setQueryData<{ pages: MessagesPage[]; pageParams: unknown[] }>(
+    key,
+    (old) => {
+      if (!old) return old;
+      let didReplace = false;
+      const newPages = old.pages.map((page) => ({
+        ...page,
+        messages: page.messages.map((m) => {
+          if (m.id === message.id) {
+            didReplace = true;
+            return message; // replace PENDING with confirmed server version
+          }
+          return m;
+        }),
+      }));
+      found = didReplace;
+      return { ...old, pages: newPages };
+    }
+  );
+
+  if (!found) {
+    appendMessageToCache(queryClient, message);
+  }
+  return found;
+}
+
+// ── updateMessageStatusInCache ───────────────────────────────────────────────
+// Finds a message by ID and updates its status.
+// RULE: status never goes backwards. SENT < DELIVERED < READ.
+// If the incoming status is lower than what we have, we ignore the update.
+const STATUS_RANK: Record<string, number> = {
+  PENDING:   0,
+  SENT:      1,
+  DELIVERED: 2,
+  READ:      3,
+  FAILED:    -1,
+};
+
+export function updateMessageStatusInCache(
+  queryClient: QueryClient,
+  conversationId: string,
+  messageId: string,
+  newStatus: Message["status"]
+): void {
+  const key = ["messages", conversationId];
+
+  queryClient.setQueryData<{ pages: MessagesPage[]; pageParams: unknown[] }>(
+    key,
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          messages: page.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const currentRank = STATUS_RANK[m.status] ?? 0;
+            const newRank     = STATUS_RANK[newStatus] ?? 0;
+            if (newRank <= currentRank) return m; // never downgrade
+            return { ...m, status: newStatus };
+          }),
+        })),
+      };
+    }
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create these Zustand stores if they do not already exist:
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/stores/typingStore.ts  ─────────────────
+
+import { create } from "zustand";
+
+// Stores who is currently typing, per conversation.
+// Updated by the socket's typing:update event handler.
+
+interface TypingState {
+  typingMap: Map<string, string[]>;
+  setTyping: (conversationId: string, userIds: string[]) => void;
+}
+
+export const useTypingStore = create<TypingState>((set) => ({
+  typingMap: new Map(),
+  setTyping: (conversationId, userIds) =>
+    set((s) => {
+      const next = new Map(s.typingMap);
+      next.set(conversationId, userIds);
+      return { typingMap: next };
+    }),
+}));
+
+──────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/stores/presenceStore.ts  ───────────────
+
+import { create } from "zustand";
+
+// Stores online/offline status for every user we know about.
+// Updated by the socket's presence:update and presence:snapshot event handlers.
+
+interface PresenceEntry {
+  online:   boolean;
+  lastSeen: string | null;
+}
+
+interface PresenceState {
+  presenceMap:    Map<string, PresenceEntry>;
+  setPresence:    (userId: string, entry: PresenceEntry) => void;
+  setPresenceMap: (map: Map<string, PresenceEntry>) => void;
+}
+
+export const usePresenceStore = create<PresenceState>((set) => ({
+  presenceMap: new Map(),
+
+  setPresence: (userId, entry) =>
+    set((s) => {
+      const next = new Map(s.presenceMap);
+      next.set(userId, entry);
+      return { presenceMap: next };
+    }),
+
+  setPresenceMap: (map) => set({ presenceMap: map }),
+}));
+
+──────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/hooks/useSocketEvents.ts
+────────────────────────────────────────────────────────────────────────────────
+
+  THIS IS THE MOST IMPORTANT HOOK IN THIS PART.
+  It registers ALL server-to-client listeners in one place.
+  It cleans them all up when it unmounts — preventing the "triple message" bug.
+
+────────────────── PASTE THIS INTO  src/hooks/useSocketEvents.ts  ───────────────
+
+import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { socket }                        from "../lib/socket";
+import { ServerEvents }                  from "../constants/events";
+import { useAuthStore }                  from "../stores/authStore";
+import { useTypingStore }                from "../stores/typingStore";
+import { usePresenceStore }              from "../stores/presenceStore";
+import {
+  replaceOrAppendMessageInCache,
+  updateMessageStatusInCache,
+} from "../utils/messageCache";
+import { Message } from "../api/messages.api";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// Registers every server-to-client event listener in ONE place.
+// Removes them all on unmount — prevents the "message appears 3 times
+// after 3 hot-reloads" bug.
+//
+// Mount this hook ONCE alongside useSocketConnection in your root component.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function useSocketEvents() {
+  const queryClient    = useQueryClient();
+  const currentUser    = useAuthStore((s) => s.user);
+  const setTyping      = useTypingStore((s) => s.setTyping);
+  const setPresence    = usePresenceStore((s) => s.setPresence);
+  const setPresenceMap = usePresenceStore((s) => s.setPresenceMap);
+
+  useEffect(() => {
+
+    // ── message:new ──────────────────────────────────────────────────────────
+    // RULE 2: write into React Query cache, not into component state.
+    // RULE 4: de-duplicate by ID (done inside replaceOrAppendMessageInCache).
+    function onMessageNew({ message }: { message: Message }) {
+      // replaceOrAppendMessageInCache checks if this ID already exists
+      // (as a PENDING optimistic message). If yes -> replace in place.
+      // If no -> append as a new message. In both cases, no duplicate is created.
+      replaceOrAppendMessageInCache(queryClient, message);
+
+      // Invalidate the conversation list so its "last message" preview updates.
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    }
+
+    // ── message:status ────────────────────────────────────────────────────────
+    function onMessageStatus({
+      messageId,
+      status,
+      conversationId,
+    }: {
+      messageId:      string;
+      status:         Message["status"];
+      userId:         string;
+      conversationId: string;
+    }) {
+      updateMessageStatusInCache(queryClient, conversationId, messageId, status);
+    }
+
+    // ── typing:update ─────────────────────────────────────────────────────────
+    // RULE 3: typing info goes into Zustand, not React Query.
+    function onTypingUpdate({
+      conversationId,
+      typerIds,
+    }: {
+      conversationId: string;
+      typerIds: string[];
+    }) {
+      // Filter out ourselves — we only show OTHERS typing.
+      const others = typerIds.filter((id) => id !== currentUser?.id);
+      setTyping(conversationId, others);
+    }
+
+    // ── presence:update ───────────────────────────────────────────────────────
+    // RULE 3: presence info goes into Zustand.
+    function onPresenceUpdate({
+      userId,
+      online,
+      lastSeen,
+    }: {
+      userId:   string;
+      online:   boolean;
+      lastSeen: string | null;
+    }) {
+      setPresence(userId, { online, lastSeen });
+    }
+
+    // ── presence:snapshot ─────────────────────────────────────────────────────
+    // Full snapshot sent by the server right after we connect.
+    function onPresenceSnapshot(
+      list: Array<{ userId: string; online: boolean; lastSeen?: string | null }>
+    ) {
+      const map = new Map(
+        list.map(({ userId, online, lastSeen }) => [
+          userId,
+          { online, lastSeen: lastSeen ?? null },
+        ])
+      );
+      setPresenceMap(map);
+    }
+
+    // ── conversation:created ──────────────────────────────────────────────────
+    function onConversationCreated() {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    }
+
+    // ── sync:messages ─────────────────────────────────────────────────────────
+    // After reconnect, the server sends us messages we missed while offline.
+    function onSyncMessages({
+      conversationId,
+      messages,
+    }: {
+      conversationId: string;
+      messages: Message[];
+    }) {
+      for (const message of messages) {
+        replaceOrAppendMessageInCache(queryClient, {
+          ...message,
+          conversationId,
+        });
+      }
+    }
+
+    // ── sync:reload ───────────────────────────────────────────────────────────
+    // We missed too many messages. Re-fetch from REST.
+    function onSyncReload({ conversationId }: { conversationId: string }) {
+      queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+    }
+
+    // ── error ─────────────────────────────────────────────────────────────────
+    function onError({ code, message }: { code: string; message: string }) {
+      console.error(`[Socket error] ${code}: ${message}`);
+      // Add a toast notification here if you have a toast library.
+    }
+
+    // ── Register ALL listeners ────────────────────────────────────────────────
+    socket.on(ServerEvents.MESSAGE_NEW,          onMessageNew);
+    socket.on(ServerEvents.MESSAGE_STATUS,       onMessageStatus);
+    socket.on(ServerEvents.TYPING_UPDATE,        onTypingUpdate);
+    socket.on(ServerEvents.PRESENCE_UPDATE,      onPresenceUpdate);
+    socket.on(ServerEvents.PRESENCE_SNAPSHOT,    onPresenceSnapshot);
+    socket.on(ServerEvents.CONVERSATION_CREATED, onConversationCreated);
+    socket.on(ServerEvents.SYNC_MESSAGES,        onSyncMessages);
+    socket.on(ServerEvents.SYNC_RELOAD,          onSyncReload);
+    socket.on(ServerEvents.ERROR,                onError);
+
+    // ── Cleanup: REMOVE ALL listeners on unmount ──────────────────────────────
+    // THIS IS THE MOST CRITICAL STEP IN THIS WHOLE FILE.
+    //
+    // Without this, every hot-reload (file save in your editor) adds a new
+    // copy of every listener to the same socket. After 3 saves you have 3
+    // onMessageNew handlers — every new message appears 3 times.
+    // The socket.off() calls below prevent that completely.
+    return () => {
+      socket.off(ServerEvents.MESSAGE_NEW,          onMessageNew);
+      socket.off(ServerEvents.MESSAGE_STATUS,       onMessageStatus);
+      socket.off(ServerEvents.TYPING_UPDATE,        onTypingUpdate);
+      socket.off(ServerEvents.PRESENCE_UPDATE,      onPresenceUpdate);
+      socket.off(ServerEvents.PRESENCE_SNAPSHOT,    onPresenceSnapshot);
+      socket.off(ServerEvents.CONVERSATION_CREATED, onConversationCreated);
+      socket.off(ServerEvents.SYNC_MESSAGES,        onSyncMessages);
+      socket.off(ServerEvents.SYNC_RELOAD,          onSyncReload);
+      socket.off(ServerEvents.ERROR,                onError);
+    };
+  }, [queryClient, currentUser?.id, setTyping, setPresence, setPresenceMap]);
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+  ADD THIS CALL IN YOUR ROOT COMPONENT (same place as useSocketConnection):
+
+  ─── IN  src/App.tsx ────────────────────────────────────────────────────────
+  import { useSocketConnection } from "./hooks/useSocketConnection";
+  import { useSocketEvents }     from "./hooks/useSocketEvents";
+
+  export function App() {
+    useSocketConnection();  // manages connect / disconnect
+    useSocketEvents();       // registers all event listeners
+    // ...
+  }
+  ────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • A second person sends a message → it appears ONCE in the list, not twice.
+   • Save your file in the editor (hot reload) ten times → each message still
+     appears ONCE. (This is the most important test of this whole step.)
+   • Typing indicators appear and disappear in the chat header.
+   • Online/offline dots update in the chat header in real time.
+   • No TypeScript errors.
+
+================================================================================
+
+STEP 23.4 — BUILD THE OPTIMISTIC SEND
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  "Optimistic" means: we show the message in the list IMMEDIATELY when the
+  user presses Send, BEFORE the server has confirmed it.
+
+  WITHOUT optimistic sending:
+    User presses Send → waits 200-300ms for the server → message appears.
+    The app feels slow and broken. The user wonders if it sent.
+
+  WITH optimistic sending:
+    User presses Send → message appears INSTANTLY with a pending clock icon.
+    200ms later the server confirms → the clock changes to a grey tick.
+    The app feels instant.
+
+  HOW IT WORKS — STEP BY STEP:
+
+    STEP A: User presses Send.
+
+    STEP B: We generate a UUID on the client:
+              const messageId = uuidv4()
+
+            WHY CLIENT-GENERATED?
+              If the socket disconnects mid-send, we can re-emit the EXACT
+              same payload with the SAME ID. The server uses "create or update"
+              (upsert), so a retry creates zero duplicates.
+              If you generated a new ID on retry, the database would contain
+              TWO messages from that send attempt.
+
+    STEP C: We write the message into the React Query cache IMMEDIATELY
+            with status = "PENDING". It appears in the list right away.
+
+    STEP D: We emit  message:send  with that ID over the socket.
+
+    STEP E: The server processes it and broadcasts  message:new  back.
+            Our  onMessageNew  listener fires.
+            replaceOrAppendMessageInCache finds the PENDING entry by ID,
+            replaces it IN PLACE with the confirmed server version.
+            The message keeps its position in the list — no jump.
+
+    STEP F: If an error arrives instead, we mark the message "FAILED"
+            and show a retry button. The retry re-emits the SAME ID —
+            still safe because the server will upsert.
+
+────────────────────────────────────────────────────────────────────────────────
+
+HOW TO WIRE THE OPTIMISTIC SEND IN YOUR CHAT WINDOW:
+────────────────────────────────────────────────────────────────────────────────
+
+  The Composer component from Part 22 already calls  onOptimisticSend  when
+  the user presses Send. The key point is: that callback must write the PENDING
+  message into the REACT QUERY CACHE — NOT into a local useState array.
+
+  If you write it into a useState array, the PENDING message is in a different
+  place from confirmed messages. When onMessageNew fires and tries to find the
+  PENDING entry to replace it, it looks in the React Query cache — does not
+  find it there — and appends a new confirmed copy. Now you have two: the old
+  PENDING copy in useState and a new SENT copy in the cache.
+
+  THE CORRECT APPROACH in your ChatWindow (or ChatPage):
+
+  ─── IN  src/components/chat/ChatWindow.tsx ─────────────────────────────────
+
+  import { useQueryClient }        from "@tanstack/react-query";
+  import { appendMessageToCache }  from "../../utils/messageCache";
+  import { Message }               from "../../api/messages.api";
+  import { socket }                from "../../lib/socket";
+  import { useConnectionStore }    from "../../stores/connectionStore";
+  import { Composer }              from "./Composer";
+  import { MessageList }           from "./MessageList";
+  import { ChatHeader }            from "./ChatHeader";
+
+  export function ChatWindow({ conversationId, conversation }) {
+    const queryClient = useQueryClient();
+    const status      = useConnectionStore((s) => s.status);
+
+    // Called by the Composer immediately when the user presses Send.
+    // Writes the PENDING message into the React Query cache so it appears
+    // instantly. When the server confirms it, onMessageNew replaces it.
+    function handleOptimisticSend(message: Omit<Message, "sender">) {
+      appendMessageToCache(queryClient, message as Message);
+    }
+
+    return (
+      <div className="flex flex-col flex-1 overflow-hidden">
+        <ChatHeader conversation={conversation} />
+        <MessageList conversationId={conversationId}
+                     conversationName={conversation.displayName}
+                     isGroup={conversation.isGroup}
+                     liveMessages={[]}   // <- empty: live messages now go into cache
+        />
+        <Composer
+          conversationId={conversationId}
+          socket={socket}
+          isConnected={status === "connected"}
+          onOptimisticSend={handleOptimisticSend}
+        />
+      </div>
+    );
+  }
+  ─────────────────────────────────────────────────────────────────────────────
+
+  NOTE on the  liveMessages  prop:
+    In Part 22 the MessageList had a liveMessages prop that held socket messages
+    in local state. Now that socket messages go directly into the React Query
+    cache, you pass an empty array (or remove the prop if you refactor).
+    The MessageList will automatically see the new messages because it reads
+    from the React Query cache via useMessageHistory.
+
+────────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Fast connection: press Send → message appears instantly as PENDING
+     (clock icon), then confirms to ✓ tick within milliseconds.
+   • Slow connection (DevTools > Network > Slow 3G): message still appears
+     instantly as PENDING. The ✓ tick arrives after a delay. Message never
+     disappears or jumps position.
+   • Failure test: stop the backend, send a message, see the FAILED indicator.
+     Start the backend again, click Retry → message sends, indicator becomes ✓.
+   • The message NEVER appears twice, even after the server confirms it.
+
+================================================================================
+
+STEP 23.5 — HANDLE JOINING AND LEAVING ROOMS
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  The server organises messages by "rooms". When you open a conversation, you
+  must tell the server: "I am in this room — send me live messages for it."
+  When you leave, you tell the server: "I left this room."
+
+  WHY THIS MATTERS:
+    If you open Conversation A and never emit conversation:join, you will NOT
+    receive live messages for A — even though the socket is connected.
+    The server only broadcasts to people who have joined the room.
+
+  THE STRATEGY: JOIN ONE ROOM AT A TIME
+
+    Open Conversation A:
+      emit  conversation:join  { conversationId: A }
+
+    Switch to Conversation B:
+      emit  conversation:leave  { conversationId: A }
+      emit  conversation:join   { conversationId: B }
+
+    Close the chat (go to settings, etc.):
+      emit  conversation:leave  { conversationId: B }
+
+  WAIT FOR THE ACK BEFORE TRUSTING LIVE MESSAGES:
+    The server sends back  conversation:joined  when the join is confirmed.
+    Before receiving that ack, do NOT display live messages for that room.
+    After the ack, live messages are guaranteed to arrive in order.
+
+  ON RECONNECT — RE-JOIN AUTOMATICALLY:
+    When the socket reconnects, the server does NOT remember which rooms you
+    were in. You must re-emit conversation:join for the current conversation.
+    The useRoomManager hook handles this automatically by watching the
+    connection status in Zustand.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Create this file:  src/hooks/useRoomManager.ts
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────── PASTE THIS INTO  src/hooks/useRoomManager.ts  ────────────────
+
+import { useEffect, useRef, useState } from "react";
+import { socket }             from "../lib/socket";
+import { ClientEvents, ServerEvents } from "../constants/events";
+import { useConnectionStore } from "../stores/connectionStore";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// Manages joining and leaving conversation rooms.
+//
+// USAGE inside your ChatWindow:
+//   const { isJoined } = useRoomManager(conversationId);
+//   // Only render live messages AFTER isJoined is true.
+//
+// ON CONVERSATION CHANGE:
+//   Emits leave for the old conversation, join for the new one.
+//
+// ON RECONNECT:
+//   The connectionStore status changes to "connected" when the socket
+//   reconnects. This hook watches that change and re-emits join automatically.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function useRoomManager(conversationId: string) {
+  const [isJoined, setIsJoined] = useState(false);
+  const status = useConnectionStore((s) => s.status);
+  // Remember the previous conversationId so we can emit leave before join.
+  const prevConversationId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!conversationId) return;
+
+    // ── Leave the previous room ────────────────────────────────────────────────
+    if (
+      prevConversationId.current &&
+      prevConversationId.current !== conversationId
+    ) {
+      socket.emit(ClientEvents.CONVERSATION_LEAVE, {
+        conversationId: prevConversationId.current,
+      });
+    }
+    prevConversationId.current = conversationId;
+
+    // ── Reset — we are not yet joined in the new room ──────────────────────────
+    setIsJoined(false);
+
+    // ── Emit join ─────────────────────────────────────────────────────────────
+    socket.emit(ClientEvents.CONVERSATION_JOIN, { conversationId });
+
+    // ── Listen for the server's ack ───────────────────────────────────────────
+    function onJoined({ conversationId: joinedId }: { conversationId: string }) {
+      if (joinedId === conversationId) {
+        setIsJoined(true);
+      }
+    }
+
+    socket.on(ServerEvents.CONVERSATION_JOINED, onJoined);
+
+    // ── Cleanup: leave the room and remove the listener ────────────────────────
+    return () => {
+      socket.off(ServerEvents.CONVERSATION_JOINED, onJoined);
+      socket.emit(ClientEvents.CONVERSATION_LEAVE, { conversationId });
+      setIsJoined(false);
+    };
+  // Re-run when the conversation changes OR when the socket reconnects.
+  // When status goes from "reconnecting" to "connected", this effect re-runs
+  // and re-emits conversation:join automatically.
+  }, [conversationId, status]);
+
+  return { isJoined };
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+  HOW TO USE THIS HOOK IN YOUR CHAT WINDOW:
+
+  ─── IN  src/components/chat/ChatWindow.tsx ─────────────────────────────────
+  import { useRoomManager } from "../../hooks/useRoomManager";
+
+  export function ChatWindow({ conversationId, conversation }) {
+    const { isJoined } = useRoomManager(conversationId);
+
+    // Show a small loading state while we wait for the server to confirm
+    // we are in the room. Usually this is less than 100ms.
+    if (!isJoined) {
+      return (
+        <div className="flex flex-1 items-center justify-center text-muted-foreground">
+          Joining conversation...
+        </div>
+      );
+    }
+
+    return (
+      <>
+        <ChatHeader conversation={conversation} />
+        <MessageList ... />
+        <Composer   ... />
+      </>
+    );
+  }
+  ─────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Open Conversation A → messages appear live.
+   • Switch to Conversation B → messages from B appear live; messages from A
+     do not show up in B.
+   • Switch back and forth between A and B ten times → live messages always
+     appear in the correct conversation.
+   • Disable the network → re-enable → room is rejoined automatically and
+     live messages resume without any manual action.
+
+================================================================================
+
+STEP 23.6 — HANDLE ORDERING
+================================================================================
+
+UNDERSTAND WHAT WE ARE BUILDING:
+  Two users can send a message at exactly the same millisecond. The socket
+  delivers them in whichever order they physically arrive at the server —
+  which may differ from the order they were sent. If we display them in
+  arrival order, the conversation can look scrambled.
+
+  THE RULE:
+    Sort messages by their server timestamp (createdAt ASC = oldest first).
+    When two messages have the EXACT same timestamp (very rare but possible),
+    use the message ID as a tiebreaker. IDs are UUIDs, so this gives a
+    deterministic order that is the same on every client.
+
+  WHERE TO SORT:
+    Sort in useMessageHistory.ts when building the final flat array.
+    Do NOT sort inside the component on every render — that is wasteful.
+    Sort once when the data comes out of the cache.
+
+  WHY NOT TRUST ARRIVAL ORDER?
+    Message A is sent from Paris at 10:00:00.000.
+    Message B is sent from Tokyo at 10:00:00.001.
+    Due to network routing, B might arrive at the London server first.
+    On another connection later, A arrives first.
+    The server's  createdAt  is the only reliable source of truth.
+
+────────────────────────────────────────────────────────────────────────────────
+
+ACTION: Update  src/hooks/useMessageHistory.ts  — add a sort step.
+────────────────────────────────────────────────────────────────────────────────
+
+  FIND this section in useMessageHistory.ts (from Part 22):
+
+    const messages: Message[] = (query.data?.pages ?? [])
+      .slice()
+      .reverse()
+      .flatMap((page) => page.messages.slice().reverse());
+
+  REPLACE IT WITH:
+
+    // ── Flatten and sort by (createdAt ASC, then id ASC) ──────────────────
+    //
+    // WHY:
+    //   1. The server returns pages newest-first. We reverse pages so the
+    //      oldest page comes first, then reverse messages within each page.
+    //   2. We sort the final flat array by createdAt to correct any
+    //      out-of-order messages from the socket's live tail.
+    //   3. ID is the tiebreaker — deterministic and stable across all clients.
+    //
+    const messages: Message[] = (query.data?.pages ?? [])
+      .slice()
+      .reverse()
+      .flatMap((page) => page.messages.slice().reverse())
+      .sort((a, b) => {
+        const timeDiff =
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        // Tiebreaker: alphabetical by ID (deterministic, arbitrary order)
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+
+────────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Open the app in two browser tabs logged in as different users.
+   • Both users type and send messages rapidly at the same time.
+   • Both tabs show the messages in the SAME order — no scrambling.
+   • A message sent slightly earlier always appears above one sent slightly later,
+     regardless of which tab you are watching.
+   • No TypeScript errors.
+
+================================================================================
+
+FULL CHECKLIST — ALL OF PART 23
+================================================================================
+
+Go through each item below. Do NOT mark it done until you have actually tested it.
+
+  STEP 23.1:
+  [ ] README.md has the four ownership rules section at the top.
+
+  STEP 23.2:
+  [ ] src/constants/events.ts  exists with ClientEvents and ServerEvents.
+  [ ] src/lib/socket.ts        exists with autoConnect: false and
+                               transports: ["websocket"].
+  [ ] src/stores/connectionStore.ts    exists with status field and setStatus.
+  [ ] src/hooks/useSocketConnection.ts exists with all 5 lifecycle handlers.
+  [ ] src/components/shared/ConnectionBanner.tsx exists.
+  [ ] useSocketConnection() called ONCE in App.tsx (or root layout).
+  [ ] ConnectionBanner rendered ONCE in the authenticated layout.
+  [ ] TEST: Disable network → "Reconnecting..." banner appears within ~3s.
+  [ ] TEST: Re-enable network → banner disappears.
+
+  STEP 23.3:
+  [ ] src/utils/messageCache.ts        exists with all three helper functions.
+  [ ] src/stores/typingStore.ts        exists with setTyping.
+  [ ] src/stores/presenceStore.ts      exists with setPresence and setPresenceMap.
+  [ ] src/hooks/useSocketEvents.ts     exists with all event handlers.
+  [ ] useSocketEvents() called ONCE in App.tsx.
+  [ ] TEST: Receive a message → appears ONCE.
+  [ ] TEST: Hot-reload 10 times (save any file 10 times) → message still
+            appears ONCE after receiving it.
+  [ ] TEST: Typing indicator appears in header when other user types.
+  [ ] TEST: Online/offline dot updates in real time in the header.
+
+  STEP 23.4:
+  [ ] ChatWindow's onOptimisticSend writes to React Query cache using
+      appendMessageToCache (NOT to a useState array).
+  [ ] liveMessages prop on MessageList is now empty array (or removed).
+  [ ] TEST: Press Send → message appears instantly as PENDING.
+  [ ] TEST: Server confirms → status changes to ✓, message stays in place.
+  [ ] TEST: Stop backend → send → see FAILED. Start backend → click Retry
+            → message sends. Only ONE message in the list.
+
+  STEP 23.5:
+  [ ] src/hooks/useRoomManager.ts exists.
+  [ ] ChatWindow calls useRoomManager and shows "Joining..." until isJoined.
+  [ ] TEST: Switch conversations rapidly → live messages always go to the
+            correct conversation.
+  [ ] TEST: Disconnect and reconnect → room is rejoined automatically.
+
+  STEP 23.6:
+  [ ] useMessageHistory.ts has the .sort() step after .flatMap().
+  [ ] TEST: Two tabs send messages simultaneously → both tabs show the same order.
+
+================================================================================
+
+COMMON ERRORS AND HOW TO FIX THEM
+================================================================================
+
+  ERROR: "Each message appears 2 times"
+  ──────────────────────────────────────
+  CAUSE A: onOptimisticSend writes to local useState AND the cache. When the
+           server confirms, the cache already has it, so a second one is appended.
+  FIX A:   Write ONLY to the cache from onOptimisticSend. Remove the useState array.
+
+  CAUSE B: The de-duplication check is missing from appendMessageToCache.
+  FIX B:   Make sure the "alreadyExists" check is inside appendMessageToCache
+           BEFORE the new message is inserted.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ERROR: "Message appears 3 times after saving the file (hot reload)"
+  ───────────────────────────────────────────────────────────────────
+  CAUSE: The socket listeners are not being removed when the hook re-runs.
+  FIX:   Make sure the useEffect in useSocketEvents.ts returns a cleanup
+         function that calls socket.off() for EVERY event it registered.
+         Every socket.on() must have a matching socket.off() in the return.
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ERROR: "Messages arrive in wrong order"
+  ────────────────────────────────────────
+  CAUSE: The sort step is missing or sorting in the wrong direction.
+  FIX:   Add the .sort() call in useMessageHistory.ts.
+         Confirm you are sorting ASC (oldest first → positive result for newer).
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ERROR: "No live messages after switching conversations"
+  ───────────────────────────────────────────────────────
+  CAUSE: conversation:join was not emitted for the new conversation.
+  FIX:   Check useRoomManager — it must emit LEAVE for the old ID and JOIN
+         for the new ID whenever conversationId changes (check useEffect deps).
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ERROR: "Banner does not disappear after restoring network"
+  ──────────────────────────────────────────────────────────
+  CAUSE: The onConnect handler is not updating the status to "connected".
+  FIX:   In useSocketConnection.ts, confirm that onConnect calls
+         setStatus("connected") and is properly registered with socket.on().
+
+  ─────────────────────────────────────────────────────────────────────────────
+
+  ERROR: "TypeScript error on socket.auth = { token: ... }"
+  ──────────────────────────────────────────────────────────
+  CAUSE: The TypeScript type for Socket from socket.io-client does not expose
+         the auth property directly.
+  FIX:   Cast it:
+           (socket as any).auth = { token: newToken };
+         Or import the ManagerOptions type and cast more precisely.
+
+================================================================================
+
+FINAL WORDS
+================================================================================
+
+Part 23 is complete when all six steps are done and all checklist items pass.
+
+The work you did here is the hardest and most important engineering in the
+frontend. Every professional chat application — WhatsApp Web, Slack, Discord —
+has these exact same four ownership rules at its core. The specific libraries
+change, but the rules do not:
+
+  One data store owns history.
+  One real-time channel writes into that store.
+  A separate store holds ephemeral UI state.
+  De-duplicate by ID at every write.
+
+Once Part 23 is working correctly, all future features (editing, deleting,
+reactions, threads) are straightforward additions on top of this solid foundation.
+
+================================================================================
+  END OF PART 23
+================================================================================

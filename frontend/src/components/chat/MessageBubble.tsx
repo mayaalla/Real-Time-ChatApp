@@ -53,8 +53,8 @@ export function MessageBubble({
   showSenderInfo,
   isGroup,
 }: MessageBubbleProps) {
-  const isDeleted = message.deletedAt !== null;
-  const isEdited  = !isDeleted && message.editedAt !== null;
+  const isDeleted = !!message.deletedAt;
+  const isEdited  = !isDeleted && !!message.editedAt;
   const time      = format(new Date(message.createdAt), "HH:mm");
 
   return (
@@ -106,7 +106,7 @@ export function MessageBubble({
           ) : (
             <>
               {/* Attachments */}
-              {message.attachments.length > 0 && (
+              {(message.attachments?.length ?? 0) > 0 && (
                 <div className="flex flex-col gap-2 mb-1">
                   {message.attachments.map((url) =>
                     isImageUrl(url) ? (

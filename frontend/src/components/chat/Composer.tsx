@@ -174,6 +174,7 @@ export function Composer({
         },
         credentials: "include",
         body: JSON.stringify({
+          userId:         currentUser.id,
           fileName:       file.name,
           fileType:       file.type,
           fileSize:       file.size,
