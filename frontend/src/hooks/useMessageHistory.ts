@@ -1,6 +1,6 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useAuthStore }     from "../store/authStore";
-import { fetchMessages, Message } from "../api/messages.api";
+import { fetchMessages, type Message } from "../api/messages.api";
 
 // ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
 //
@@ -21,15 +21,17 @@ export function useMessageHistory(conversationId: string) {
     queryKey: ["messages", conversationId],
 
     // queryFn is called every time React Query needs a page.
-    // pageParam is the cursor for that page. On the first call it is undefined.
+    // pageParam is the cursor for that page (string) or null on the first call.
     queryFn: ({ pageParam }) =>
-      fetchMessages(conversationId, token, pageParam as string | undefined),
+      fetchMessages(conversationId, token, pageParam ?? undefined),
 
     // Tell React Query: use the nextCursor from each page as the pageParam
-    // for the NEXT page. If nextCursor is null, there are no more pages.
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    // for the NEXT page. Returning null signals there are no more pages.
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? null,
 
-    initialPageParam: undefined,
+    // Cast so React Query infers PageParam as `string | null`, not just `null`.
+    // Without the cast it infers null-only and rejects string cursors from getNextPageParam.
+    initialPageParam: null as string | null,
 
     // Keep old data while re-fetching so the screen does not go blank.
     placeholderData: (prev) => prev,
