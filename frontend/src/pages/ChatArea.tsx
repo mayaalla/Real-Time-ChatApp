@@ -8,7 +8,7 @@ import { useTypingStore }               from "../stores/typingStore";
 import { ChatHeader }                   from "../components/chat/ChatHeader";
 import { MessageList }                  from "../components/chat/MessageList";
 import { Composer }                     from "../components/chat/Composer";
-import { Message }                      from "../api/messages.api";
+import { type Message }                      from "../api/messages.api";
 
 // ─── WHAT THIS PAGE DOES ──────────────────────────────────────────────────────
 //
