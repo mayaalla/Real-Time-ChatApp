@@ -7,7 +7,7 @@ import { MessageListSkeleton }  from "./MessageListSkeleton";
 import { EmptyConversation }    from "./EmptyConversation";
 import { MessageBubble }        from "./MessageBubble";
 import { buildMessageGroups }   from "../../utils/messageGrouping";
-import { Message }              from "../../api/messages.api";
+import { type Message }              from "../../api/messages.api";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
