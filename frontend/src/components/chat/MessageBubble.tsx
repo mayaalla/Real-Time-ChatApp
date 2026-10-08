@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { Download } from "lucide-react";
-import { Message } from "../../api/messages.api";
+import {type Message } from "../../api/messages.api";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
