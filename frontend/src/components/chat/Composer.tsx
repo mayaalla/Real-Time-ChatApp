@@ -1,12 +1,12 @@
 import {
   useRef, useState, useEffect, useCallback,
-  ChangeEvent, KeyboardEvent,
+  type ChangeEvent, type KeyboardEvent,
 } from "react";
 import { v4 as uuidv4 }  from "uuid";
 import { Paperclip, Send, X, FileText } from "lucide-react";
 import { useAuthStore }  from "../../store/authStore";
 import { useDraftStore } from "../../stores/draftStore";
-import { Message }       from "../../api/messages.api";
+import {type Message }       from "../../api/messages.api";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
