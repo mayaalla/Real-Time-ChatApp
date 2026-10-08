@@ -169,6 +169,8 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
           attachments:    message.attachmentAddress,   // the DB column name
           status:         message.status,
           createdAt:      message.createdAt.toISOString(),
+          editedAt:       message.editedAt  ? message.editedAt.toISOString()  : null,
+          deletedAt:      message.deletedAt ? message.deletedAt.toISOString() : null,
         },
       };
 

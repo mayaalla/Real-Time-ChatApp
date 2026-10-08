@@ -66,10 +66,14 @@ export function socketAuthMiddleware(socket:Socket, next: (err?:Error) => void):
     return next(new Error(`AUTH_INVALID: ${result.error}`));
   }
 
-  // token is good attach user info 
- socket.data.userId = result.payload.sub
- socket.data.username = result.payload.username
- console.log(`Socket authenticated: ${socket.data.username} (${socket.id})`);
+  // token is good attach user info
+  socket.data.userId   = result.payload.sub;
+  socket.data.username = result.payload.username;
+  console.log(`Socket authenticated: ${socket.data.username} (${socket.id})`);
+
+  // ✅ CRITICAL: Must call next() to allow the connection to proceed.
+  // Without this call, Socket.IO hangs every client in the handshake forever.
+  next();
 
 
 }

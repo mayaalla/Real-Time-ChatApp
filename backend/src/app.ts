@@ -204,13 +204,16 @@ export function createApp(): Application {
   app.use("/api/uploads", uploadsRouter);
 
   // ─────────────────────────────────────────────────────────
-  // 📂 MESSAGES ROUTES — /api/messages
+  // 📂 MESSAGES ROUTES — mounted at /api/conversations
   // ─────────────────────────────────────────────────────────
-  // GET   /api/messages         → list messages     (Step 9.1)
-  // POST  /api/messages         → create message    (Step 9.2)
-  // PATCH /api/messages/:messageId → edit message    (Step 9.3)
+  // The messages router defines conversation-scoped routes:
+  //   GET    /api/conversations/:id/messages
+  //   POST   /api/conversations/:id/messages
+  //   POST   /api/conversations/:id/read
+  //   DELETE /api/conversations/messages/:messageId
+  //   PATCH  /api/conversations/messages/:messageId
   // All routes protected by the authenticate middleware (applied in the router).
-  app.use("/api/messages", messagesRouter);
+  app.use("/api/conversations", messagesRouter);
 
   // ─────────────────────────────────────────────────────────
   // 📂 CONVERSATIONS ROUTES — /api/conversations

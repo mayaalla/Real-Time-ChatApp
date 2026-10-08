@@ -113,8 +113,13 @@ export const loginLimiter = rateLimiter({
   windowMs: AUTH_WINDOW_MS,
 });
 
+// The refresh endpoint is not a brute-force vector — it requires a valid
+// HttpOnly cookie that an attacker cannot read from JS. A tight limit here
+// causes legitimate users (who refresh the page several times or have
+// multiple tabs open) to hit 429 and get kicked to /login.
+// 30 attempts per 15 min is safe and far more than any normal user needs.
 export const refreshLimiter = rateLimiter({
-  maxAttempts: AUTH_MAX_ATTEMPTS,
+  maxAttempts: 30,
   windowMs: AUTH_WINDOW_MS,
 });
 

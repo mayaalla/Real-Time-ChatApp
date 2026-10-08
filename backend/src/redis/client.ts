@@ -14,10 +14,9 @@ function makeClient(label:string){
     const client = createClient({
         url: env.REDIS_URL,
         socket: {
-                // TLS is required by hosted Redis providers (Upstash, Redis Cloud, etc.).
-                // The rediss:// scheme enables it automatically; we keep this explicit too.
-        tls: env.REDIS_URL.startsWith("rediss://"),
-
+                // TLS is automatically enabled by the rediss:// URL scheme.
+                // Do NOT set tls:boolean here — that conflicts with the redis type definitions.
+                // If you need explicit TLS options, pass an object (e.g., { rejectUnauthorized: false }).
         connectTimeout: 10000,
         reconnectStrategy: (retries) =>{
 
