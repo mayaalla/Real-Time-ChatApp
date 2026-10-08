@@ -66,7 +66,7 @@ async function refreshAccessToken(): Promise<string> {
   // withCredentials is true on the instance.
   // Backend envelope: { ok: true, data: { accessToken: string } }
   const response = await api.post<{ ok: boolean; data: { accessToken: string } }>(
-    '/auth/refresh',
+    '/api/auth/refresh',
   )
   return response.data.data.accessToken
 }
@@ -96,7 +96,7 @@ api.interceptors.response.use(
     const alreadyRetried = originalRequest._retried === true
     // Don't attempt a refresh if the failing request IS the refresh endpoint
     // (prevents an infinite refresh loop).
-    const isRefreshEndpoint = originalRequest.url?.includes('/auth/refresh')
+    const isRefreshEndpoint = originalRequest.url?.includes('/api/auth/refresh')
 
     if (isUnauthorised && !isRefreshEndpoint) {
       // Read the error code from the backend envelope.
@@ -127,8 +127,16 @@ api.interceptors.response.use(
           // Patch the original request and retry it with the new token.
           originalRequest.headers.Authorization = `Bearer ${newToken}`
           return api(originalRequest)
-        } catch {
-          // Refresh itself failed — credentials are gone; kick the user out.
+        } catch (refreshError) {
+          // If the refresh endpoint itself was rate-limited (429), do NOT force
+          // logout — the session is still valid; the server is just throttling.
+          // Reject so the original request fails, but leave the user logged in.
+          const refreshAxiosError = refreshError as AxiosError
+          if (refreshAxiosError?.response?.status === 429) {
+            return Promise.reject(refreshError)
+          }
+          // Any other refresh failure (401, network error, etc.) means the
+          // credentials are genuinely gone — kick the user to /login.
           forceLogout()
           return Promise.reject(error)
         }

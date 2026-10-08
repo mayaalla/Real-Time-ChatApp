@@ -1,5 +1,18 @@
 const API = import.meta.env.VITE_API_URL as string;
 
+// ─── Custom error types ────────────────────────────────────────────────────────
+// Allows callers to distinguish a temporary rate-limit (429) from a genuine
+// auth failure (401 / any other non-ok status).
+export class RateLimitError extends Error {
+  /** Seconds until the rate-limit window resets (from the Retry-After header). */
+  retryAfter: number;
+  constructor(retryAfter: number) {
+    super("Too many refresh attempts. Please wait before retrying.");
+    this.name = "RateLimitError";
+    this.retryAfter = retryAfter;
+  }
+}
+
 // ─── refreshSession ────────────────────────────────────────────────────────────
 // Calls POST /api/auth/refresh.
 // The browser automatically sends the HttpOnly cookie — no manual work needed.
@@ -10,6 +23,13 @@ export async function refreshSession(): Promise<string> {
       credentials: "include",   // ← THIS IS CRITICAL. It tells the browser to send cookies.
     });
   
+    // 429 → the server is rate-limiting us, but the session is NOT gone.
+    // Throw a typed error so the caller can avoid clearing the session.
+    if (res.status === 429) {
+      const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
+      throw new RateLimitError(retryAfter);
+    }
+
     if (!res.ok) {
       throw new Error("Refresh failed");
     }
@@ -39,7 +59,9 @@ export async function fetchMe(token: string): Promise<{
     }
   
     const json = await res.json();
-    return json.data;
+    // Backend envelope: { ok: true, data: { user: { id, username, ... } } }
+    // We need the inner user object, not the wrapper.
+    return json.data.user ?? json.data;
   }
   
   // ─── loginUser ────────────────────────────────────────────────────────────────

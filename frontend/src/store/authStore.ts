@@ -1,5 +1,6 @@
 
 import {create} from "zustand";
+import { setAccessToken } from "../lib/axios";
 
 
 // user public data shape
@@ -32,15 +33,21 @@ export const useAuthStore = create<AuthState>(
         isCheckingAuth: true,
 
         // call this after a successful login OR a successful session restore.
-        setSession : (user, token) =>
-            set({user, accessToken : token, isCheckingAuth:false}),
-        // casll this on logout or whene the session expire
-        clearSession: () => 
-            set({user:null, accessToken:null, isCheckingAuth:false}),
+        setSession : (user, token) => {
+            setAccessToken(token);   // ← keep axios in sync
+            set({user, accessToken : token, isCheckingAuth:false});
+        },
+        // call this on logout or when the session expires
+        clearSession: () => {
+            setAccessToken(null);    // ← keep axios in sync
+            set({user:null, accessToken:null, isCheckingAuth:false});
+        },
 
-        // call this when you get a new access token from a referesh endpoint
-        setToken: (token) => 
-            set({accessToken:token}),
+        // call this when you get a new access token from a refresh endpoint
+        setToken: (token) => {
+            setAccessToken(token);   // ← keep axios in sync
+            set({accessToken:token});
+        },
         
         // call this to control the still checking flag
         setIscheckingAuth: (value) =>

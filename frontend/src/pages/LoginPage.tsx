@@ -29,8 +29,13 @@ export function LoginPage() {
     setBusy(true);   // disable the button and show "Logging in…"
 
     try {
-      // Call the backend. email can also be a username — the backend accepts both.
-      const { user, accessToken } = await loginUser({ email, password });
+      // Call the backend. Detect if the user typed an email or a username.
+      // The backend schema validates email with .email() — sending a bare
+      // username in the `email` field would cause a 400 validation error.
+      const isEmail = email.includes("@");
+      const { user, accessToken } = await loginUser(
+        isEmail ? { email, password } : { username: email, password }
+      );
 
       // Fill the Zustand store. The app now knows who is logged in.
       setSession(user, accessToken);

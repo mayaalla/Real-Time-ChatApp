@@ -1,17 +1,23 @@
 // ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
 //
 // Contains the HTTP call for fetching message history.
-// Used by useInfiniteQuery in Step 22.2.
+// Uses the configured axios instance so the auth interceptor handles
+// token attachment and silent 401-refresh automatically.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API = import.meta.env.VITE_API_URL as string;
+import { api } from "../lib/axios";
 
+// ─── Message shape ────────────────────────────────────────────────────────────
+// NOTE: the backend Prisma column is `attachmentAddress: String[]`.
+//       We normalise it here to `attachments` for convenience, but the raw
+//       API response key is `attachmentAddress` — see fetchMessages below.
 export interface Message {
   id: string;
   conversationId: string;
   senderId: string;
   textBody: string | null;
+  /** Normalised from the backend's `attachmentAddress` field. */
   attachments: string[];
   status: "SENT" | "DELIVERED" | "READ" | "PENDING" | "FAILED";
   createdAt: string;
@@ -31,28 +37,50 @@ export interface MessagesPage {
   hasMore: boolean;
 }
 
-// fetchMessages — fetches one page of message history.
-// cursor is the ISO-datetime string the previous page returned as nextCursor.
-// Pass undefined for the very first load (no cursor = newest 50 messages).
+// Raw shape of a single message as the backend sends it.
+interface RawMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  textBody: string | null;
+  attachmentAddress: string[];   // ← backend column name
+  status: Message["status"];
+  createdAt: string;
+  editedAt: string | null;
+  deletedAt: string | null;
+  sender?: Message["sender"];
+}
+
+/** Map one raw backend message to the frontend Message shape. */
+function normalise(raw: RawMessage): Message {
+  const { attachmentAddress, ...rest } = raw;
+  return {
+    ...rest,
+    attachments: attachmentAddress ?? [],  // guard against missing field
+  };
+}
+
+// fetchMessages — fetches one page of message history via the axios instance.
+// The axios interceptor automatically attaches the Bearer token and handles
+// silent token refresh on 401 — no manual token argument needed.
 export async function fetchMessages(
   conversationId: string,
-  token: string,
+  _token: string,          // kept for backwards-compat with useMessageHistory
   cursor?: string,
   limit = 50
 ): Promise<MessagesPage> {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (cursor) params.set("cursor", cursor);
+  const params: Record<string, string> = { limit: String(limit) };
+  if (cursor) params.cursor = cursor;
 
-  const res = await fetch(
-    `${API}/api/conversations/${conversationId}/messages?${params}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-      credentials: "include",
-    }
-  );
+  const { data } = await api.get<{
+    ok: boolean;
+    data: { messages: RawMessage[]; nextCursor: string | null; hasMore: boolean };
+  }>(`/api/conversations/${conversationId}/messages`, { params });
 
-  if (!res.ok) throw new Error("Failed to load messages");
-
-  const json = await res.json();
-  return json.data as MessagesPage;
+  return {
+    messages:   data.data.messages.map(normalise),
+    nextCursor: data.data.nextCursor,
+    hasMore:    data.data.hasMore,
+  };
 }
+
