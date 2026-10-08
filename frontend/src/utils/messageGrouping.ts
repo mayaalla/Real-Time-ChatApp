@@ -1,5 +1,5 @@
 import { isToday, isYesterday, format, differenceInMinutes } from "date-fns";
-import { Message } from "../api/messages.api";
+import {type  Message } from "../api/messages.api";
 
 // ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
 //
