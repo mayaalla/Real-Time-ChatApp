@@ -9,26 +9,20 @@ import { create } from "zustand";
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Stores who is currently typing, per conversation.
+// Updated by the socket's typing:update event handler.
+
 interface TypingState {
   typingMap: Map<string, string[]>;
-  setTypers: (conversationId: string, typerIds: string[]) => void;
-  clearTypers: (conversationId: string) => void;
+  setTyping: (conversationId: string, userIds: string[]) => void;
 }
 
-export const useTypingStore = create<TypingState>((set, get) => ({
+export const useTypingStore = create<TypingState>((set) => ({
   typingMap: new Map(),
-
-  setTypers: (conversationId, typerIds) =>
-    set(() => {
-      const next = new Map(get().typingMap);
-      next.set(conversationId, typerIds);
-      return { typingMap: next };
-    }),
-
-  clearTypers: (conversationId) =>
-    set(() => {
-      const next = new Map(get().typingMap);
-      next.delete(conversationId);
+  setTyping: (conversationId, userIds) =>
+    set((s) => {
+      const next = new Map(s.typingMap);
+      next.set(conversationId, userIds);
       return { typingMap: next };
     }),
 }));

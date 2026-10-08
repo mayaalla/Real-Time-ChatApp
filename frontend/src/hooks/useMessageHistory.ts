@@ -15,7 +15,7 @@ import { fetchMessages, type Message } from "../api/messages.api";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function useMessageHistory(conversationId: string) {
-  const token = useAuthStore((s) => s.accessToken)!;
+  const token = useAuthStore((s) => s.accessToken);
 
   const query = useInfiniteQuery({
     queryKey: ["messages", conversationId],
@@ -23,7 +23,7 @@ export function useMessageHistory(conversationId: string) {
     // queryFn is called every time React Query needs a page.
     // pageParam is the cursor for that page (string) or null on the first call.
     queryFn: ({ pageParam }) =>
-      fetchMessages(conversationId, token, pageParam ?? undefined),
+      fetchMessages(conversationId, token!, pageParam ?? undefined),
 
     // Tell React Query: use the nextCursor from each page as the pageParam
     // for the NEXT page. Returning null signals there are no more pages.
@@ -35,6 +35,11 @@ export function useMessageHistory(conversationId: string) {
 
     // Keep old data while re-fetching so the screen does not go blank.
     placeholderData: (prev) => prev,
+
+    // Never fire the query when the token is not yet available.
+    // Guards against the 401 MISSING_TOKEN race that can happen if React Query
+    // retries a stale cache entry before useSessionRestore has completed.
+    enabled: !!token,
   });
 
   // React Query stores pages in the order they were fetched:
@@ -46,9 +51,16 @@ export function useMessageHistory(conversationId: string) {
   // Step 1: Reverse the pages array so the oldest page comes first.
   // Step 2: Within each page, reverse the messages (server returns newest-first).
   const messages: Message[] = (query.data?.pages ?? [])
-    .slice()               // copy — do NOT mutate the original
-    .reverse()             // oldest page first
-    .flatMap((page) => page.messages.slice().reverse()); // oldest message first in each page
+  .slice()
+  .reverse()
+  .flatMap((page) => page.messages.slice().reverse())
+  .sort((a, b) => {
+    const timeDiff =
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    // Tiebreaker: alphabetical by ID (deterministic, arbitrary order)
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 
   return {
     messages,

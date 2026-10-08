@@ -1,14 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate }       from "react-router-dom";
-import { io, Socket }                   from "socket.io-client";
 import { useAuthStore }                 from "../store/authStore";
 import { useConversationStore }         from "../store/conversationStore";
-import { usePresenceStore }             from "../stores/presenceStore";
-import { useTypingStore }               from "../stores/typingStore";
+import { useConnectionStore }           from "../store/connectionStore";
 import { ChatHeader }                   from "../components/chat/ChatHeader";
 import { MessageList }                  from "../components/chat/MessageList";
 import { Composer }                     from "../components/chat/Composer";
-import { type Message }                      from "../api/messages.api";
+import { socket }                       from "../lib/socket";
+import { type Message }                 from "../api/messages.api";
 
 // ─── WHAT THIS PAGE DOES ──────────────────────────────────────────────────────
 //
@@ -16,15 +15,14 @@ import { type Message }                      from "../api/messages.api";
 //
 // Responsibilities:
 //   1. Find the conversation data from the Zustand store (loaded by the sidebar).
-//   2. Create and manage a Socket.IO connection (once per session).
-//   3. Wire socket events into the presence and typing Zustand stores.
-//   4. Collect live messages as they arrive from the socket.
-//   5. Update message statuses (PENDING → SENT → DELIVERED → READ).
-//   6. Render ChatHeader + MessageList + Composer.
+//   2. Use the SHARED Socket.IO singleton (managed by useSocketConnection in App.tsx).
+//      ⚠️ Do NOT create a new io() instance here — that would cause double-connect
+//         errors in React StrictMode and fight with the global connection manager.
+//   3. Collect live messages as they arrive from the socket.
+//   4. Update message statuses (PENDING → SENT → DELIVERED → READ).
+//   5. Render ChatHeader + MessageList + Composer.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL as string ?? import.meta.env.VITE_API_URL as string;
 
 // Status rank — we only update if the new status is higher (never go backwards).
 const STATUS_RANK: Record<string, number> = {
@@ -38,65 +36,19 @@ const STATUS_RANK: Record<string, number> = {
 export function ChatArea() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate           = useNavigate();
-  const token              = useAuthStore((s) => s.accessToken)!;
   const currentUser        = useAuthStore((s) => s.user)!;
   const conversations      = useConversationStore((s) => s.conversations);
   const clearUnread        = useConversationStore((s) => s.clearUnread);
   const bumpConversation   = useConversationStore((s) => s.bumpConversation);
-  const setPresence        = usePresenceStore((s) => s.setPresence);
-  const setTypers          = useTypingStore((s) => s.setTypers);
 
-  const [socket, setSocket]           = useState<Socket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
+  // Read connection status from the global connection store (set by useSocketConnection).
+  const connectionStatus   = useConnectionStore((s) => s.status);
+  const isConnected        = connectionStatus === "connected";
+
   const [liveMessages, setLiveMessages] = useState<Message[]>([]);
 
   // Find the conversation object from the sidebar store.
   const conversation = conversations.find((c) => c.id === conversationId);
-
-  // ── Create the socket once on mount ──────────────────────────────────────────
-  useEffect(() => {
-    if (!token) return;
-
-    const sock = io(SOCKET_URL, {
-      auth:              { token },
-      transports:        ["websocket"],
-      reconnectionDelay: 1000,
-    });
-
-    sock.on("connect",    () => setIsConnected(true));
-    sock.on("disconnect", () => setIsConnected(false));
-
-    setSocket(sock);
-    return () => {
-      sock.disconnect();
-    };
-  }, [token]);
-
-  // ── Wire presence events ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!socket) return;
-
-    // presence:update  { userId, online, lastSeen }
-    const onPresence = (payload: { userId: string; online: boolean; lastSeen: string | null }) => {
-      setPresence(payload.userId, { online: payload.online, lastSeen: payload.lastSeen });
-    };
-
-    socket.on("presence:update", onPresence);
-    return () => { socket.off("presence:update", onPresence); };
-  }, [socket, setPresence]);
-
-  // ── Wire typing events ────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!socket) return;
-
-    // typing:update  { conversationId, typerIds: string[] }
-    const onTyping = (payload: { conversationId: string; typerIds: string[] }) => {
-      setTypers(payload.conversationId, payload.typerIds);
-    };
-
-    socket.on("typing:update", onTyping);
-    return () => { socket.off("typing:update", onTyping); };
-  }, [socket, setTypers]);
 
   // ── Reset live messages when conversation changes ─────────────────────────────
   useEffect(() => {
@@ -107,7 +59,7 @@ export function ChatArea() {
 
   // ── Listen for incoming messages ──────────────────────────────────────────────
   useEffect(() => {
-    if (!socket || !conversationId) return;
+    if (!conversationId) return;
 
     const onMessageNew = (payload: { message: Message }) => {
       const { message } = payload;
@@ -134,13 +86,10 @@ export function ChatArea() {
 
     socket.on("message:new", onMessageNew);
     return () => { socket.off("message:new", onMessageNew); };
-  }, [socket, conversationId, bumpConversation]);
+  }, [conversationId, bumpConversation]);
 
   // ── Listen for status updates ──────────────────────────────────────────────────
   useEffect(() => {
-    if (!socket) return;
-
-    // message:status  { messageId, status }
     const onStatus = (payload: { messageId: string; status: Message["status"] }) => {
       setLiveMessages((prev) =>
         prev.map((m) => {
@@ -156,7 +105,7 @@ export function ChatArea() {
 
     socket.on("message:status", onStatus);
     return () => { socket.off("message:status", onStatus); };
-  }, [socket]);
+  }, []);
 
   // ── Optimistic send — add immediately as PENDING ──────────────────────────────
   const handleOptimisticSend = useCallback((message: Omit<Message, "sender">) => {
