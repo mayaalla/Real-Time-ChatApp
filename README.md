@@ -16,7 +16,11 @@ Hadra is a browser-based chat app for one-to-one and group conversations. It let
 
 ## Tech stack and decisions
 
-The frontend uses **React, TypeScript, Vite, Tailwind CSS, Zustand, and TanStack Query**. The API uses **Node.js, Express, Socket.IO, Zod, PostgreSQL, and Prisma**. PostgreSQL models users, conversation membership, messages, and read receipts; Redis supports presence and carries Socket.IO events between server instances. Authentication uses short-lived access tokens and refresh tokens in HTTP-only cookies. Attachments upload directly to Cloudinary using signatures issued by the API.
+- **Frontend:** React, TypeScript, Vite, and Tailwind CSS build the interface. Zustand manages client state, while TanStack Query manages server data.
+- **API and real-time messaging:** Node.js and Express serve the API, Socket.IO delivers live updates, and Zod validates inputs.
+- **Data and scaling:** PostgreSQL and Prisma model users, conversation membership, messages, and read receipts. Redis tracks presence and carries Socket.IO events between server instances.
+- **Authentication:** Short-lived access tokens and refresh tokens in HTTP-only cookies keep sessions active.
+- **Attachments:** The API issues signed upload details so files can upload directly to Cloudinary.
 
 ## Engineering highlight
 
