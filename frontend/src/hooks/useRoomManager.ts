@@ -1,70 +1,27 @@
-import { useEffect, useRef, useState } from "react";
-import { socket }             from "../lib/socket";
+import { useEffect, useState } from "react";
+import { socket } from "../lib/socket";
 import { ClientEvents, ServerEvents } from "../constants/events";
 import { useConnectionStore } from "../store/connectionStore";
 
-// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
-//
-// Manages joining and leaving conversation rooms.
-//
-// USAGE inside your ChatWindow:
-//   const { isJoined } = useRoomManager(conversationId);
-//   // Only render live messages AFTER isJoined is true.
-//
-// ON CONVERSATION CHANGE:
-//   Emits leave for the old conversation, join for the new one.
-//
-// ON RECONNECT:
-//   The connectionStore status changes to "connected" when the socket
-//   reconnects. This hook watches that change and re-emits join automatically.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function useRoomManager(conversationId: string) {
-  const [isJoined, setIsJoined] = useState(false);
+  const [joinedId, setJoinedId] = useState<string | null>(null);
   const status = useConnectionStore((s) => s.status);
-  // Remember the previous conversationId so we can emit leave before join.
-  const prevConversationId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!conversationId) return;
+    if (!conversationId || status !== "connected" || !socket.connected) return;
 
-    // ── Leave the previous room ────────────────────────────────────────────────
-    if (
-      prevConversationId.current &&
-      prevConversationId.current !== conversationId
-    ) {
-      socket.emit(ClientEvents.CONVERSATION_LEAVE, {
-        conversationId: prevConversationId.current,
-      });
+    function onJoined({ conversationId: id }: { conversationId: string }) {
+      if (id === conversationId) setJoinedId(id);
     }
-    prevConversationId.current = conversationId;
-
-    // ── Reset — we are not yet joined in the new room ──────────────────────────
-    setIsJoined(false);
-
-    // ── Emit join ─────────────────────────────────────────────────────────────
-    socket.emit(ClientEvents.CONVERSATION_JOIN, { conversationId });
-
-    // ── Listen for the server's ack ───────────────────────────────────────────
-    function onJoined({ conversationId: joinedId }: { conversationId: string }) {
-      if (joinedId === conversationId) {
-        setIsJoined(true);
-      }
-    }
-
+    // Install the listener before emitting; don't buffer room changes while offline.
     socket.on(ServerEvents.CONVERSATION_JOINED, onJoined);
-
-    // ── Cleanup: leave the room and remove the listener ────────────────────────
+    socket.emit(ClientEvents.CONVERSATION_JOIN, { conversationId });
     return () => {
       socket.off(ServerEvents.CONVERSATION_JOINED, onJoined);
-      socket.emit(ClientEvents.CONVERSATION_LEAVE, { conversationId });
-      setIsJoined(false);
+      if (socket.connected) socket.emit(ClientEvents.CONVERSATION_LEAVE, { conversationId });
+      setJoinedId(null);
     };
-  // Re-run when the conversation changes OR when the socket reconnects.
-  // When status goes from "reconnecting" to "connected", this effect re-runs
-  // and re-emits conversation:join automatically.
   }, [conversationId, status]);
 
-  return { isJoined };
+  return { isJoined: status === "connected" && joinedId === conversationId };
 }

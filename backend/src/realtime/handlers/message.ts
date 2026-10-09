@@ -13,6 +13,9 @@ import { isParticipant } from "../../modules/conversations/conversations.service
 import { prisma } from "../../db/prisma.js";
 import { safeHandler, emitError } from "./utils.js";
 import { z } from "zod";
+import { deleteMessage, modifyMessage } from "../../modules/messages/messages.service.js";
+import { EditMessageBodySchema, MessageParamsSchema } from "../../modules/messages/messages.schemas.js";
+import { broadcastMessageChange } from "../messageUpdates.js";
 
 import { checkSocketRateLimit, MSG_LIMIT, MSG_WINDOW_S, NOISE_LIMIT, NOISE_WINDOW_S} from "../../utils/socketRateLimiter.js";
 
@@ -47,7 +50,7 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
     const userId : string = socket.data.userId;
 
     // check if the user is a member of the conversation
-    const isMember = await isParticipant(conversationId, userId);
+    const isMember = await isParticipant(userId, conversationId);
     if (!isMember) {
       emitError(socket, "NOT_PARTICIPANT", "You are not a member of this conversation");
       return;
@@ -147,6 +150,9 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
       // We save whatever the client sent, or an empty array if nothing.
       const message = await prisma.message.upsert({
         where: { id },          // look for a row with this exact id
+        include: {
+          sender: { select: { id: true, username: true, avatarAddress: true, lastSeen: true } },
+        },
         update: {},             // if it exists → do nothing, just return it
         create: {               // if it does NOT exist → create it
           id,
@@ -165,6 +171,10 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
           id:             message.id,
           conversationId: message.conversationId,
           senderId:       message.senderId,
+          sender: {
+            ...message.sender,
+            lastSeen: message.sender.lastSeen?.toISOString() ?? null,
+          },
           textBody:       message.textBody,
           attachments:    message.attachmentAddress,   // the DB column name
           status:         message.status,
@@ -203,82 +213,39 @@ export function registerMessageHandlers(io: Server, socket: Socket): void {
         // Send to the user's personal room. If they are in the conversation
         // room, they already got it from step 7 — the client must de-duplicate
         // by message id.
-        io.to(`user:${p.userId}`).emit(ServerEvents.MESSAGE_NEW, messagePayload);
+        io.to(`user:${p.userId}`).except(conversationId).emit(ServerEvents.MESSAGE_NEW, messagePayload);
       }
 
       console.log(`Message ${id} saved and broadcast to conversation ${conversationId}`);
     }),
   );
 
-  // message:edit
   socket.on(ClientEvents.MESSAGE_EDIT,
     safeHandler<MessageEditPayload>(socket, async (payload) => {
-      const parsed = z.object({ id: z.string().uuid() }).safeParse(payload);
+      const parsed = z.object({
+        id: MessageParamsSchema.shape.messageId,
+        textBody: EditMessageBodySchema.shape.textBody,
+      }).safeParse(payload);
       if (!parsed.success) {
-        emitError(socket, "VALIDATION_ERROR", "id must be a valid UUID");
+        emitError(socket, "VALIDATION_ERROR", parsed.error.issues[0]?.message ?? "Invalid edit");
         return;
       }
+      const message = await modifyMessage(parsed.data.id, socket.data.userId, parsed.data.textBody);
+      await broadcastMessageChange(io, message);
+    }),
+  );
 
-      const { id } = parsed.data;
-
-      // check if the message exists
-      const message = await prisma.message.findUnique({ where: { id } });
-      if (!message) {
-        emitError(socket, "MESSAGE_NOT_FOUND", "Message not found");
-        return;
-      }
-      // check if the user is the sender of the message
-      if (message.senderId !== socket.data.userId) {
-        emitError(socket, "NOT_AUTHORIZED", "You are not the sender of this message");
-        return;
-      }
-      // update the message
-      const updatedMessage = await prisma.message.update({ where: { id }, data: { textBody: payload.textBody, attachmentAddress: payload.attachments, editedAt: new Date() } });
-      socket.emit(ServerEvents.MESSAGE_EDITED, { id: updatedMessage.id });
-
-      // broadcast to everyone else in the conversation 
-      socket.to(message.conversationId).emit(ServerEvents.MESSAGE_EDITED, { id: updatedMessage.id });
-
-
-    }
-  ));
-  //message:delete
-  // DELETING A MESSAGE:
-  // The client sends event "message:delete" with: { messageId }
-  // The server:
-  //   1. Validates the payload
-  //   2. Looks up the message
-  //   3. Checks ownership (only your own messages)
-  //   4. Sets deletedAt = new Date() (SOFT DELETE — the row stays in the database)
-  //   5. Broadcasts "message:deleted" to the conversation room
-  // The frontend shows "message deleted" placeholder where the message was.
   socket.on(ClientEvents.MESSAGE_DELETE,
     safeHandler<MessageDeletePayload>(socket, async (payload) => {
-      const parsed = z.object({ id: z.string().uuid() }).safeParse(payload);
+      const parsed = z.object({ id: MessageParamsSchema.shape.messageId }).safeParse(payload);
       if (!parsed.success) {
-        emitError(socket, "VALIDATION_ERROR", "id must be a valid UUID");
+        emitError(socket, "VALIDATION_ERROR", parsed.error.issues[0]?.message ?? "Invalid message ID");
         return;
       }
-
-      const { id } = parsed.data;
-      // check if the message exists
-      const message = await prisma.message.findUnique({ where: { id } });
-      if(!message){
-        emitError(socket, "MESSAGE_NOT_FOUND", "Message not found");
-        return;
-      }
-      // check if the user is the sender of the message
-      if (message.senderId !== socket.data.userId) {
-        emitError(socket, "NOT_AUTHORIZED", "You are not the sender of this message");
-        return;
-      }
-      // delete the message
-      const deletedMessage = await prisma.message.update({ where: { id }, data: { deletedAt: new Date() } });
-      socket.emit(ServerEvents.MESSAGE_DELETED, { id: deletedMessage.id });
-      socket.to(message.conversationId).emit(ServerEvents.MESSAGE_DELETED, { id: deletedMessage.id });
-    }
-  ));
-
+      const message = await deleteMessage(parsed.data.id, socket.data.userId);
+      await broadcastMessageChange(io, message);
+    }),
+  );
 
 
 }

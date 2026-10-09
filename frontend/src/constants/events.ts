@@ -13,6 +13,8 @@ export const ClientEvents = {
   export const ServerEvents = {
     MESSAGE_NEW:            "message:new",
     MESSAGE_STATUS:         "message:status",
+    MESSAGE_EDITED:         "message:edited",
+    MESSAGE_DELETED:        "message:deleted",
     TYPING_UPDATE:          "typing:update",
     PRESENCE_UPDATE:        "presence:update",
     PRESENCE_SNAPSHOT:      "presence:snapshot",

@@ -95,6 +95,7 @@ export interface ConversationJoinPayload {
   /** Server tells the sender: "your message now has this status" */
   export interface MessageStatusPayload {
     messageId: string;
+    conversationId: string;
     status:    "SENT" | "DELIVERED" | "READ";
     userId:    string;               // which user triggered this status change
   }

@@ -62,28 +62,22 @@ export function Composer({
 
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef    = useRef(false);
+  const lastTypingStartRef = useRef(0);
 
   // ── Save draft when the user leaves this conversation ────────────────────────
   useEffect(() => {
+    const textarea = textareaRef.current;
     return () => {
+      if (useAuthStore.getState().user?.id !== currentUser.id) return;
       // This cleanup runs when the component unmounts or conversationId changes.
-      const currentText = textareaRef.current?.value ?? "";
+      const currentText = textarea?.value ?? "";
       if (currentText.trim()) {
         setDraft(conversationId, currentText);
       } else {
         clearDraft(conversationId);
       }
     };
-  }, [conversationId]);  // re-runs whenever conversationId changes
-
-  // ── Load the draft for the new conversation ───────────────────────────────────
-  useEffect(() => {
-    setText(getDraft(conversationId));
-    setSelectedFile(null);
-    setUploadedUrl(null);
-    setUploadProgress(null);
-    setUploadError(null);
-  }, [conversationId, getDraft]);
+  }, [conversationId, currentUser.id, setDraft, clearDraft]);
 
   // ── Auto-grow the textarea ───────────────────────────────────────────────────
   useEffect(() => {
@@ -95,22 +89,29 @@ export function Composer({
 
   // ── Typing events (throttled) ────────────────────────────────────────────────
   const stopTyping = useCallback(() => {
-    if (!socket || !isConnected || !isTypingRef.current) return;
+    const wasTyping = isTypingRef.current;
     isTypingRef.current = false;
+    lastTypingStartRef.current = 0;
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-    socket.emit("typing:stop", { conversationId });
-  }, [socket, isConnected, conversationId]);
+    if (socket?.connected && wasTyping) socket.emit("typing:stop", { conversationId });
+  }, [socket, conversationId]);
+
+  useEffect(() => () => stopTyping(), [stopTyping]);
 
   const handleTypingStart = useCallback(() => {
-    if (!socket || !isConnected) return;
-    if (!isTypingRef.current) {
+    if (!socket?.connected || !isConnected) return;
+    const now = Date.now();
+    // Refresh before the backend's five-second TTL while typing continuously.
+    if (!isTypingRef.current || now - lastTypingStartRef.current >= 2000) {
       isTypingRef.current = true;
+      lastTypingStartRef.current = now;
       socket.emit("typing:start", { conversationId });
     }
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     typingTimerRef.current = setTimeout(() => {
       isTypingRef.current = false;
-      socket?.emit("typing:stop", { conversationId });
+      lastTypingStartRef.current = 0;
+      if (socket.connected) socket.emit("typing:stop", { conversationId });
     }, 3000);
   }, [socket, isConnected, conversationId]);
 
@@ -251,7 +252,7 @@ export function Composer({
     const payload = {
       id:             messageId,
       conversationId: conversationId,
-      textBody:       trimmedText || null,
+      textBody:       trimmedText || undefined,
       attachments:    uploadedUrl ? [uploadedUrl] : [],
     };
 

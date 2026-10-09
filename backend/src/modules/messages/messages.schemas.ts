@@ -79,7 +79,7 @@ export type MarkReadBody = z.infer<typeof MarkReadBodySchema>;
  * Route params for single-message endpoints (delete / edit).
  */
 export const MessageParamsSchema = z.object({
-  messageId: z.string().uuid("messageId must be a valid UUID"),
+  messageId: z.string().min(1).max(128),
 });
 
 export type MessageParams = z.infer<typeof MessageParamsSchema>;
@@ -90,7 +90,7 @@ export type MessageParams = z.infer<typeof MessageParamsSchema>;
  * (attachment-only messages cannot be edited this way).
  */
 export const EditMessageBodySchema = z.object({
-  textBody: z.string().min(1, "textBody cannot be empty"),
+  textBody: z.string().trim().min(1, "Message cannot be empty").max(2000, "Message cannot exceed 2000 characters"),
 });
 
 export type EditMessageBody = z.infer<typeof EditMessageBodySchema>;

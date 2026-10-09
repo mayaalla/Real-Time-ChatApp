@@ -52,6 +52,7 @@ model Participant {
 
   @@unique([userId, conversationId])
   @@index([conversationId])
+  @@index([userId])           // speeds up "find all conversations for user X"
 }
 
 enum Status {
@@ -85,6 +86,8 @@ model Receipt {
   message   Message  @relation(fields: [messageId], references: [id])
 
   @@id([messageId, userId])
+  @@index([userId])           // speeds up NOT EXISTS(SELECT ... WHERE userId = $n)
+  @@index([userId, messageId]) // covers the composite receipt lookup
 }
 
 // Strategy: Postgres table — filter by expiry at query time.

@@ -67,7 +67,7 @@ export function registerPresenceHandlers(io: Server, socket: Socket): void {
 
   // ── ON CONNECT ───────────────────────────────────────────────────────────────
   // We run this immediately when the socket is registered.
-  void handleConnect(io, socket, userId);
+  const presenceReady = handleConnect(io, socket, userId);
 
   // ── PRESENCE REFRESH ─────────────────────────────────────────────────────────
   // Every 30 seconds, refresh the TTL on the presence key.
@@ -75,6 +75,9 @@ export function registerPresenceHandlers(io: Server, socket: Socket): void {
   // If the server crashes, the interval stops, the TTL runs out, key disappears.
   const refreshInterval = setInterval(async () => {
     try {
+      await presenceReady;
+      // Recreate the marker if Redis dropped it while this socket stayed connected.
+      await redisClient.sAdd(presenceKey(userId), socket.id);
       await redisClient.expire(presenceKey(userId), PRESENCE_TTL_SECONDS);
     } catch (err) {
       console.error(`[Presence] Failed to refresh TTL for ${username}:`, err);
@@ -86,6 +89,7 @@ export function registerPresenceHandlers(io: Server, socket: Socket): void {
   // contacts are currently online, rather than waiting for the next broadcast.
   socket.on("presence:fetch", async () => {
     try {
+      await presenceReady;
       // Find all conversation partners for this user.
       const rows = await prisma.participant.findMany({
         where: {
@@ -116,12 +120,15 @@ export function registerPresenceHandlers(io: Server, socket: Socket): void {
   // This runs when the socket closes (browser tab closed, network lost, etc.)
   socket.on("disconnect", async () => {
     clearInterval(refreshInterval);  // Stop refreshing — user is gone.
+    await presenceReady;
     await handleDisconnect(io, socket, userId);
   });
 }
 
 async function handleConnect(io: Server, socket: Socket, userId: string): Promise<void> {
   try {
+    // Join immediately so contact updates cannot be lost during Redis setup.
+    await socket.join(`user:${userId}`);
     // Add this socket ID to the user's presence set.
     // SADD = "Set Add". Creates the set if it doesn't exist.
     await redisClient.sAdd(presenceKey(userId), socket.id);
@@ -131,10 +138,6 @@ async function handleConnect(io: Server, socket: Socket, userId: string): Promis
 
     // Also add to the global "who is online" set.
     await redisClient.sAdd(onlineSetKey(), userId);
-
-    // Tell the socket to join its personal user room.
-    // (This might already be done in index.ts — if so, remove this line to avoid duplication.)
-    await socket.join(`user:${userId}`);
 
     // Broadcast "this user is online" to people who share a conversation with them.
     await broadcastPresence(io, userId, true, null);

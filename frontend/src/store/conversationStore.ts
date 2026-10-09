@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { Message } from "../api/messages.api";
 
 // ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
 //
@@ -17,13 +18,19 @@ export interface ConversationSummary {
   displayName:    string;
   displayPicture: string | null;
   lastMessage: {
+    id?: string;
     textBody:   string | null;
     senderId:   string;
     createdAt:  string;
     deletedAt?: string | null;
   } | null;
   unreadCount:  number;
-  participants: Array<{ id: string; username: string }>;
+  participants: Array<{
+    id: string;
+    username: string;
+    avatarAddress?: string | null;
+    lastSeen?: string | null;
+  }>;
 }
 
 interface ConversationState {
@@ -52,10 +59,20 @@ interface ConversationState {
 
   // Called when the server confirms the new unread count.
   setUnreadCount: (conversationId: string, count: number) => void;
+  updateMessagePreview: (message: Message) => void;
 }
 
 export const useConversationStore = create<ConversationState>((set) => ({
   conversations: [],
+
+  updateMessagePreview: (message) => set((state) => ({
+    conversations: state.conversations.map((c) =>
+      c.id === message.conversationId && c.lastMessage?.id === message.id ? {
+        ...c,
+        lastMessage: { ...c.lastMessage, textBody: message.textBody, deletedAt: message.deletedAt },
+      } : c,
+    ),
+  })),
 
   setAll: (list) =>
     set({ conversations: list }),

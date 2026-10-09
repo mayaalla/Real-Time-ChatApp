@@ -44,12 +44,14 @@ export function useSocketConnection() {
     // We update auth BEFORE connecting so the server gets the correct token
     // on the very first handshake.
     socket.auth = { token: accessToken };
-    socket.connect();
 
     // ── Lifecycle event handlers ───────────────────────────────────────────────
 
     function onConnect() {
       setStatus("connected");
+      // Ask the server for a snapshot of everyone's presence so the
+      // green dots appear immediately on (re)connect.
+      socket.emit("presence:fetch");
     }
 
     function onDisconnect(reason: string) {
@@ -102,8 +104,10 @@ export function useSocketConnection() {
     socket.on(ServerEvents.CONNECT,           onConnect);
     socket.on(ServerEvents.DISCONNECT,        onDisconnect);
     socket.on(ServerEvents.CONNECT_ERROR,     onConnectError);
-    socket.on(ServerEvents.RECONNECT_ATTEMPT, onReconnectAttempt);
-    socket.on(ServerEvents.RECONNECT,         onReconnect);
+    socket.io.on(ServerEvents.RECONNECT_ATTEMPT, onReconnectAttempt);
+    socket.io.on(ServerEvents.RECONNECT,         onReconnect);
+    socket.connect();
+    if (socket.connected) onConnect();
 
     // ── Cleanup: remove listeners and disconnect ───────────────────────────────
     // Runs when accessToken becomes null (logout) or the component unmounts.
@@ -111,15 +115,9 @@ export function useSocketConnection() {
       socket.off(ServerEvents.CONNECT,           onConnect);
       socket.off(ServerEvents.DISCONNECT,        onDisconnect);
       socket.off(ServerEvents.CONNECT_ERROR,     onConnectError);
-      socket.off(ServerEvents.RECONNECT_ATTEMPT, onReconnectAttempt);
-      socket.off(ServerEvents.RECONNECT,         onReconnect);
-      // Only hard-disconnect when the user actually logged out (no token).
-      // If accessToken is still present this cleanup is just React Strict Mode
-      // re-running the effect — disconnecting here would fire the backend
-      // presence:offline event immediately after login.
-      if (!accessToken) {
-        socket.disconnect();
-      }
+      socket.io.off(ServerEvents.RECONNECT_ATTEMPT, onReconnectAttempt);
+      socket.io.off(ServerEvents.RECONNECT,         onReconnect);
+      socket.disconnect();
     };
-  }, [accessToken]); // Re-run when the user logs in or logs out
+  }, [accessToken, setStatus, setToken]); // Re-run when the user logs in or logs out
 }

@@ -12,6 +12,8 @@
 
 import type { Request, Response, NextFunction } from "express";
 import type { AuthenticatedRequest } from "../../types/express.js";
+import { getIo } from "../../realtime/index.js";
+import { broadcastMessageChange } from "../../realtime/messageUpdates.js";
 import type {
   ConversationParams,
   GetMessagesQuery,
@@ -138,6 +140,7 @@ export async function deleteMessageController(
     const userId = authReq.user.id;
 
     const message = await deleteMessage(messageId, userId);
+    await broadcastMessageChange(getIo(), message);
 
     res.status(200).json({ ok: true, data: { message } });
   } catch (err) {
@@ -180,6 +183,7 @@ export async function editMessageController(
     const userId = authReq.user.id;
 
     const message = await modifyMessage(messageId, userId, textBody);
+    await broadcastMessageChange(getIo(), message);
 
     res.status(200).json({ ok: true, data: { message } });
   } catch (err) {

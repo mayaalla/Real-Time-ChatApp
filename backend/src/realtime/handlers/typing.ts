@@ -26,6 +26,19 @@ const TYPING_TTL_SECONDS = 5;
  * Call this once per new socket connection from realtime/index.ts.
  */
 export function registerTypingHandlers(io: Server, socket: Socket): void {
+  const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  socket.on("disconnect", () => {
+    for (const [conversationId, timer] of expiryTimers) {
+      clearTimeout(timer);
+      // Keep another tab's marker alive; Redis expiry will remove a stale one.
+      const refresh = setTimeout(() => {
+        void broadcastTypers(io, conversationId).catch(console.error);
+      }, (TYPING_TTL_SECONDS + 1) * 1000);
+      refresh.unref();
+    }
+    expiryTimers.clear();
+  });
 
   // ── typing:start ─────────────────────────────────────────────────────────────
   // Client sends this when the user starts typing (throttled — not every keystroke).
@@ -66,6 +79,14 @@ export function registerTypingHandlers(io: Server, socket: Socket): void {
         EX: TYPING_TTL_SECONDS,
       });
 
+      clearTimeout(expiryTimers.get(conversationId));
+      const timer = setTimeout(() => {
+        expiryTimers.delete(conversationId);
+        void broadcastTypers(io, conversationId).catch(console.error);
+      }, (TYPING_TTL_SECONDS + 1) * 1000);
+      timer.unref();
+      expiryTimers.set(conversationId, timer);
+
       // Broadcast the current list of typers to the conversation room.
       await broadcastTypers(io, conversationId);
     }),
@@ -88,6 +109,10 @@ export function registerTypingHandlers(io: Server, socket: Socket): void {
 
       const { conversationId } = parsed.data;
       const userId: string = socket.data.userId;
+
+      if (!(await isParticipant(userId, conversationId))) return;
+      clearTimeout(expiryTimers.get(conversationId));
+      expiryTimers.delete(conversationId);
 
       // Delete the typing key immediately.
       await redisClient.del(typingKey(conversationId, userId));

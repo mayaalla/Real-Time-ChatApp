@@ -1,5 +1,38 @@
 import { QueryClient } from "@tanstack/react-query";
-import { type Message, type MessagesPage } from "../api/messages.api";
+import type { Message, MessagesPage } from "../api/messages.api";
+
+const STATUS_RANK: Record<Message["status"], number> = {
+  PENDING: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: -1,
+};
+
+export function mergeMessage(existing: Message, incoming: Message): Message {
+  const latestContent = Date.parse(existing.editedAt ?? existing.createdAt) >
+    Date.parse(incoming.editedAt ?? incoming.createdAt) ? existing : incoming;
+  const deletedAt = existing.deletedAt ?? incoming.deletedAt;
+  return {
+    ...existing,
+    ...incoming,
+    sender: incoming.sender ?? existing.sender,
+    textBody: deletedAt ? null : latestContent.textBody,
+    attachments: deletedAt ? [] : latestContent.attachments,
+    editedAt: latestContent.editedAt,
+    deletedAt,
+    status: STATUS_RANK[existing.status] > STATUS_RANK[incoming.status] ? existing.status : incoming.status,
+  };
+}
+
+export function updateMessageInCache(queryClient: QueryClient, message: Message): void {
+  queryClient.setQueryData<{ pages: MessagesPage[]; pageParams: unknown[] }>(
+    ["messages", message.conversationId],
+    (old) => old ? {
+      ...old,
+      pages: old.pages.map((page) => ({
+        ...page,
+        messages: page.messages.map((m) => m.id === message.id ? mergeMessage(m, message) : m),
+      })),
+    } : old,
+  );
+}
 
 // ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
 //
@@ -69,7 +102,7 @@ export function replaceOrAppendMessageInCache(
         messages: page.messages.map((m) => {
           if (m.id === message.id) {
             didReplace = true;
-            return message; // replace PENDING with confirmed server version
+            return mergeMessage(m, message);
           }
           return m;
         }),
@@ -89,14 +122,6 @@ export function replaceOrAppendMessageInCache(
 // Finds a message by ID and updates its status.
 // RULE: status never goes backwards. SENT < DELIVERED < READ.
 // If the incoming status is lower than what we have, we ignore the update.
-const STATUS_RANK: Record<string, number> = {
-  PENDING:   0,
-  SENT:      1,
-  DELIVERED: 2,
-  READ:      3,
-  FAILED:    -1,
-};
-
 export function updateMessageStatusInCache(
   queryClient: QueryClient,
   conversationId: string,

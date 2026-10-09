@@ -57,7 +57,22 @@ function normalise(raw: RawMessage): Message {
   return {
     ...rest,
     attachments: attachmentAddress ?? [],  // guard against missing field
+    ...(raw.deletedAt ? { textBody: null, attachments: [] } : {}),
   };
+}
+
+export async function editMessage(messageId: string, textBody: string): Promise<Message> {
+  const { data } = await api.patch<{ data: { message: RawMessage } }>(
+    `/api/conversations/messages/${encodeURIComponent(messageId)}`, { textBody },
+  );
+  return normalise(data.data.message);
+}
+
+export async function deleteMessage(messageId: string): Promise<Message> {
+  const { data } = await api.delete<{ data: { message: RawMessage } }>(
+    `/api/conversations/messages/${encodeURIComponent(messageId)}`,
+  );
+  return normalise(data.data.message);
 }
 
 // fetchMessages — fetches one page of message history via the axios instance.

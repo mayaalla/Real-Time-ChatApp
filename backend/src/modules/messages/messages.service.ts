@@ -2,6 +2,8 @@ import { prisma } from "../../db/prisma.js";
 import type { Message } from "../../generated/prisma/client.js";
 import { signUploadService } from "../uploads/uploads.service.js";
 import type { AllowedUploadType } from "../uploads/uploads.schemas.js";
+import { isParticipant } from "../conversations/conversations.service.js";
+import { EditMessageBodySchema } from "./messages.schemas.js";
 
 // ─── Return shape for getMessageService ─────────────────────────────────────
 export type GetMessagesResult = {
@@ -59,6 +61,9 @@ export async function getMessageService(convoId:string, userId:string, cursor?:s
 
  const rows = await prisma.message.findMany({
     where: { conversationId: convoId },
+    include: {
+      sender: { select: { id: true, username: true, avatarAddress: true, lastSeen: true } },
+    },
     orderBy: { createdAt: "desc" },
     take: take + 1, // ask for ONE extra to know if there is more messages or not
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -112,65 +117,39 @@ export async function markRead(userId: string, conversationId: string): Promise<
 
 }
 
-export async function deleteMessage(messageId:string, userId:string):Promise<Message> {
-
-    const sender = await prisma.message.findFirst({
-        where:{
-            id: messageId,
-            senderId: userId, 
-        }
-    })
-
-
-    if(!sender){
-        throw new NotAllowed("you are not allowed to delete this message")
+async function getOwnedMessage(messageId: string, userId: string): Promise<Message> {
+    const message = await prisma.message.findFirst({ where: { id: messageId, senderId: userId } });
+    if (!message || !(await isParticipant(userId, message.conversationId))) {
+        throw new NotAllowed("You can only change your own messages in conversations you belong to");
     }
-    const message = await prisma.message.update({
-        where:{
-            id:messageId
-        },
-        data:{
-            deletedAt: new Date()
-        }
-    })
- 
-    return message
+    return message;
 }
 
-
-export async function modifyMessage(messageId:string, userId:string, textBody:string):Promise<Message> {
-    
-    const message = await prisma.message.findFirst({
-        where:{
-            id: messageId,
-            senderId: userId, 
-        }
-    })
-
-
-    if(!message){
-        throw new NotAllowed("you are not allowed to modfiy this message")
-    }
-
-    if(!message.textBody){
-         throw new NotAllowed("you are not allowed to modfiy this message")
-    }
-
-    const newMessage = await prisma.message.update({
-        where:{
-            id: message.id
-        },
-        data:{
-            textBody:textBody,
-            editedAt: new Date()
-        }
-    })
-
-    return newMessage
-    
+export async function deleteMessage(messageId: string, userId: string): Promise<Message> {
+    const message = await getOwnedMessage(messageId, userId);
+    if (message.deletedAt) return message;
+    // Preserve the row, ordering and read receipts. Repeat deletes keep the original timestamp.
+    return prisma.message.update({
+        where: { id: messageId, senderId: userId },
+        data: { deletedAt: new Date() },
+    });
 }
 
-
+export async function modifyMessage(messageId: string, userId: string, textBody: string): Promise<Message> {
+    const replacement = EditMessageBodySchema.parse({ textBody }).textBody;
+    const message = await getOwnedMessage(messageId, userId);
+    if (message.deletedAt || !message.textBody) {
+        throw new NotAllowed("Deleted messages and attachment-only messages cannot be edited");
+    }
+    if (message.textBody === replacement) return message;
+    // The deletedAt guard also prevents an edit racing with a deletion.
+    const { count } = await prisma.message.updateMany({
+        where: { id: messageId, senderId: userId, deletedAt: null },
+        data: { textBody: replacement, editedAt: new Date() },
+    });
+    if (count === 0) throw new NotAllowed("This message has already been deleted");
+    return prisma.message.findUniqueOrThrow({ where: { id: messageId } });
+}
 
 
 export async function sendMessage(conversationId:string, userId:string, textBody?:string, attachments?:string[]):Promise<Message> {

@@ -5,9 +5,11 @@ import { ServerEvents }                  from "../constants/events";
 import { useAuthStore }                  from "../stores/authStore";
 import { useTypingStore }                from "../stores/typingStore";
 import { usePresenceStore }              from "../stores/presenceStore";
+import { useConversationStore } from "../store/conversationStore";
 import {
   replaceOrAppendMessageInCache,
   updateMessageStatusInCache,
+  updateMessageInCache,
 } from "../utils/messageCache";
 import { type Message } from "../api/messages.api";
 
@@ -38,6 +40,9 @@ export function useSocketEvents() {
       // (as a PENDING optimistic message). If yes -> replace in place.
       // If no -> append as a new message. In both cases, no duplicate is created.
       replaceOrAppendMessageInCache(queryClient, message);
+      if (currentUser?.id && message.senderId !== currentUser.id && socket.connected) {
+        socket.emit("message:delivered", { messageId: message.id });
+      }
 
       // Invalidate the conversation list so its "last message" preview updates.
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
@@ -55,6 +60,11 @@ export function useSocketEvents() {
       conversationId: string;
     }) {
       updateMessageStatusInCache(queryClient, conversationId, messageId, status);
+    }
+
+    function onMessageChanged({ message }: { message: Message }) {
+      updateMessageInCache(queryClient, message);
+      useConversationStore.getState().updateMessagePreview(message);
     }
 
     // ── typing:update ─────────────────────────────────────────────────────────
@@ -136,6 +146,8 @@ export function useSocketEvents() {
     // ── Register ALL listeners ────────────────────────────────────────────────
     socket.on(ServerEvents.MESSAGE_NEW,          onMessageNew);
     socket.on(ServerEvents.MESSAGE_STATUS,       onMessageStatus);
+    socket.on(ServerEvents.MESSAGE_EDITED,       onMessageChanged);
+    socket.on(ServerEvents.MESSAGE_DELETED,      onMessageChanged);
     socket.on(ServerEvents.TYPING_UPDATE,        onTypingUpdate);
     socket.on(ServerEvents.PRESENCE_UPDATE,      onPresenceUpdate);
     socket.on(ServerEvents.PRESENCE_SNAPSHOT,    onPresenceSnapshot);
@@ -154,6 +166,8 @@ export function useSocketEvents() {
     return () => {
       socket.off(ServerEvents.MESSAGE_NEW,          onMessageNew);
       socket.off(ServerEvents.MESSAGE_STATUS,       onMessageStatus);
+      socket.off(ServerEvents.MESSAGE_EDITED,       onMessageChanged);
+      socket.off(ServerEvents.MESSAGE_DELETED,      onMessageChanged);
       socket.off(ServerEvents.TYPING_UPDATE,        onTypingUpdate);
       socket.off(ServerEvents.PRESENCE_UPDATE,      onPresenceUpdate);
       socket.off(ServerEvents.PRESENCE_SNAPSHOT,    onPresenceSnapshot);
@@ -162,5 +176,5 @@ export function useSocketEvents() {
       socket.off(ServerEvents.SYNC_RELOAD,          onSyncReload);
       socket.off(ServerEvents.ERROR,                onError);
     };
-  }, [queryClient, currentUser?.id, setTyping, setPresence, setPresenceMap]);
+  }, [queryClient, currentUser, setTyping, setPresence, setPresenceMap]);
 }

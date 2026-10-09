@@ -1,5 +1,6 @@
 import { useQueryClient }        from "@tanstack/react-query";
-import { appendMessageToCache }  from "../../utils/messageCache";
+import { appendMessageToCache, updateMessageInCache }  from "../../utils/messageCache";
+import { useConversationStore } from "../../store/conversationStore";
 import { type Message }               from "../../api/messages.api";
 import { socket }                from "../../lib/socket";
 import { useConnectionStore }    from "../../store/connectionStore";
@@ -50,6 +51,11 @@ export function ChatWindow({ conversationId, conversation }: ChatWindowProps) {
     appendMessageToCache(queryClient, message as Message);
   }
 
+  function handleMessageChange(message: Message) {
+    updateMessageInCache(queryClient, message);
+    useConversationStore.getState().updateMessagePreview(message);
+  }
+
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       <ChatHeader conversation={conversation} />
@@ -57,6 +63,7 @@ export function ChatWindow({ conversationId, conversation }: ChatWindowProps) {
                    conversationName={conversation.displayName}
                    isGroup={conversation.isGroup}
                    liveMessages={[]}   // <- empty: live messages now go into cache
+                   onMessageChange={handleMessageChange}
       />
       <Composer
         conversationId={conversationId}

@@ -1,28 +1,39 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ArrowDown } from "lucide-react";
 import { useAuthStore }         from "../../store/authStore";
+import { useConversationStore } from "../../store/conversationStore";
+import { useConnectionStore }   from "../../store/connectionStore";
 import { useMessageHistory }    from "../../hooks/useMessageHistory";
 import { useScrollManager }     from "../../hooks/useScrollManager";
+import { useReadReceipts }      from "../../hooks/useReadReceipts";
 import { MessageListSkeleton }  from "./MessageListSkeleton";
 import { EmptyConversation }    from "./EmptyConversation";
 import { MessageBubble }        from "./MessageBubble";
 import { buildMessageGroups }   from "../../utils/messageGrouping";
-import { type Message }              from "../../api/messages.api";
+import { mergeMessage } from "../../utils/messageCache";
+import { type Message }         from "../../api/messages.api";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
-// The scrollable message area.
-// Handles all four scroll situations.
-// Merges REST history (from useMessageHistory) with live socket messages
-// passed in via the liveMessages prop.
+// The scrollable message area. Handles all four scroll situations:
+//   1. First load  → jump to bottom instantly
+//   2. New message, user is at bottom → scroll smoothly
+//   3. New message, user scrolled up  → show "↓ New messages" pill
+//   4. User scrolls to top → load older messages, preserve scroll position
+//
+// Also:
+//   - Merges REST history (from useMessageHistory) with live socket messages
+//   - Registers useReadReceipts so message:read events are sent automatically
+//   - Announces new messages to screen readers via aria-live="polite"
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface MessageListProps {
-  conversationId: string;
+  conversationId:   string;
   conversationName: string;
-  isGroup: boolean;
-  liveMessages: Message[];  // messages that arrived via socket after REST history loaded
+  isGroup:          boolean;
+  liveMessages:     Message[];
+  onMessageChange: (message: Message) => void;
 }
 
 export function MessageList({
@@ -30,8 +41,14 @@ export function MessageList({
   conversationName,
   isGroup,
   liveMessages,
+  onMessageChange,
 }: MessageListProps) {
-  const currentUser = useAuthStore((s) => s.user);
+  const currentUser      = useAuthStore((s) => s.user);
+  const participants = useConversationStore((s) =>
+    s.conversations.find((conversation) => conversation.id === conversationId)?.participants,
+  );
+  const connectionStatus = useConnectionStore((s) => s.status);
+  const isConnected      = connectionStatus === "connected";
 
   const { messages, isLoading, isFetchingMore, hasMore, loadMore } =
     useMessageHistory(conversationId);
@@ -39,27 +56,35 @@ export function MessageList({
   const { containerRef, scrollToBottom, isAtBottom, captureHeight, restoreHeight } =
     useScrollManager();
 
+  // Sends message:read events when messages are visible and the tab is focused.
+  const { observeMessage, unobserveMessage } = useReadReceipts({
+    conversationId,
+    isConnected,
+  });
+
   const [showNewPill, setShowNewPill] = useState(false);
-  const isFirstLoad  = useRef(true);
-  const prevLiveCount = useRef(0);
+  const isFirstLoad    = useRef(true);
+  const prevLiveCount  = useRef(0);
   const topSentinelRef = useRef<HTMLDivElement>(null);
 
-  // ── Merge REST history with live socket messages ──────────────────────────
-  // De-duplicate by id — the socket sometimes echoes our own sends back.
+  // ── Merge REST history with live socket messages, de-duplicate by id ─────
   const historyIds  = new Set(messages.map((m) => m.id));
+  const liveById = new Map(liveMessages.map((m) => [m.id, m]));
   const allMessages = [
-    ...messages,
+    ...messages.map((m) => {
+      const live = liveById.get(m.id);
+      return live ? mergeMessage(live, m) : m;
+    }),
     ...liveMessages.filter((m) => !historyIds.has(m.id)),
   ];
 
   // Build display groups (date dividers + consecutive-run metadata).
   const groups = buildMessageGroups(allMessages, currentUser?.id);
 
-  // ── SITUATION 1: First load → jump to bottom instantly ────────────────────
+  // ── SITUATION 1: First load → jump to bottom instantly ───────────────────
   useEffect(() => {
     if (!isLoading && isFirstLoad.current) {
       isFirstLoad.current = false;
-      // Use setTimeout(0) so the DOM has painted before we measure scrollHeight.
       setTimeout(() => scrollToBottom(false), 0);
     }
   }, [isLoading, scrollToBottom]);
@@ -68,20 +93,17 @@ export function MessageList({
   useEffect(() => {
     if (liveMessages.length <= prevLiveCount.current) return;
     prevLiveCount.current = liveMessages.length;
-    if (isFirstLoad.current) return; // not ready yet
+    if (isFirstLoad.current) return;
 
     if (isAtBottom()) {
-      // Situation 2: user is at the bottom → scroll smoothly.
       scrollToBottom(true);
     } else {
-      // Situation 3: user is reading old messages → show pill only.
-      setShowNewPill(true);
+      const frame = requestAnimationFrame(() => setShowNewPill(true));
+      return () => cancelAnimationFrame(frame);
     }
   }, [liveMessages.length, isAtBottom, scrollToBottom]);
 
-  // ── SITUATION 4: Loading older messages → preserve scroll position ─────────
-  // An IntersectionObserver watches a tiny sentinel <div> at the very top.
-  // When it becomes visible, the user has scrolled to the top → load more.
+  // ── SITUATION 4: Loading older messages → preserve scroll position ────────
   useEffect(() => {
     const sentinel = topSentinelRef.current;
     if (!sentinel) return;
@@ -89,26 +111,24 @@ export function MessageList({
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && hasMore && !isFetchingMore) {
-          captureHeight();         // Step A: record current scrollHeight
+          captureHeight();
           loadMore().then(() => {
-            restoreHeight();       // Step B: after DOM updates, fix scrollTop
+            restoreHeight();
           });
         }
       },
-      { root: containerRef.current, threshold: 0 }
+      { root: containerRef.current, threshold: 0 },
     );
 
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [hasMore, isFetchingMore, loadMore, captureHeight, restoreHeight, containerRef]);
 
-  // ── Pill click → scroll to bottom ──────────────────────────────────────────
   const handlePillClick = useCallback(() => {
     scrollToBottom(true);
     setShowNewPill(false);
   }, [scrollToBottom]);
 
-  // ── Hide pill when user manually scrolls to the bottom ─────────────────────
   const handleScroll = useCallback(() => {
     if (isAtBottom()) setShowNewPill(false);
   }, [isAtBottom]);
@@ -127,6 +147,11 @@ export function MessageList({
       <div
         ref={containerRef}
         onScroll={handleScroll}
+        // aria-live="polite" → screen reader finishes what it's saying, THEN
+        // announces new messages. "assertive" would interrupt — bad for chat.
+        aria-live="polite"
+        aria-label="Message history"
+        role="log"
         className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-1"
         style={{ overscrollBehavior: "contain" }}
       >
@@ -152,8 +177,10 @@ export function MessageList({
         {groups.map((item, i) => {
           if (item.type === "date-divider") {
             return (
-              <div key={`divider-${item.label}-${i}`}
-                   className="flex items-center gap-3 my-3">
+              <div
+                key={`divider-${item.label}-${i}`}
+                className="flex items-center gap-3 my-3"
+              >
                 <div className="flex-1 h-px bg-border" />
                 <span className="text-xs text-muted-foreground px-2">
                   {item.label}
@@ -162,13 +189,29 @@ export function MessageList({
               </div>
             );
           }
+
+          const isOwn = item.isOwn;
+          // Optimistic messages already have a senderId but no server profile yet.
+          const profile = item.message.sender ?? (isOwn ? currentUser :
+            participants?.find((p) => p.id === item.message.senderId));
+          const sender = profile ? {
+            id: profile.id,
+            username: profile.username,
+            avatarAddress: profile.avatarAddress ?? null,
+            lastSeen: profile.lastSeen ?? null,
+          } : undefined;
           return (
             <MessageBubble
               key={item.message.id}
-              message={item.message}
-              isOwn={item.isOwn}
-              showSenderInfo={item.showSenderInfo}
+              message={{ ...item.message, sender }}
+              isOwn={isOwn}
+              showSenderInfo={isGroup || item.showSenderInfo}
               isGroup={isGroup}
+              onMessageChange={onMessageChange}
+              // Pass read-receipt callbacks ONLY for other people's messages.
+              // The hook uses these to observe/unobserve DOM elements.
+              onVisible={isOwn ? undefined : observeMessage}
+              onHidden={isOwn ? undefined  : unobserveMessage}
             />
           );
         })}
