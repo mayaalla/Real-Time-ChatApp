@@ -2,7 +2,8 @@
 
 Hadra is a browser-based chat app for one-to-one and group conversations. It lets people exchange messages in real time while keeping delivery status, unread activity, and conversation history in sync. The name comes from the Algerian Darija word for “talk.”
 
-**Live demo:** No public URL is provided yet. [View the source](https://github.com/mayaalla/Real-Time-ChatApp) or follow the local setup below.
+**Live demo:** https://real-time-chat-app-xi-liart.vercel.app/
+Test user : text@example.com      Password: testtest
 
 ![Hadra chat interface showing a conversation, message status, and the conversation list](chat.png)
 
