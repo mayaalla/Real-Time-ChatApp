@@ -178,11 +178,39 @@
     @apply bg-background text-foreground;
     letter-spacing: var(--tracking-normal);
   }
+
+  /* ── Keyboard focus ring ──────────────────────────────────────────────────
+     By default, browsers show an outline on focused elements.
+     Tailwind removes this with its `outline-none` class in many places.
+     We bring it back for KEYBOARD navigation only (not mouse clicks).
+     The :focus-visible pseudo-class handles this automatically:
+       - Keyboard focus  → shows outline
+       - Mouse click     → does NOT show outline
+  ─────────────────────────────────────────────────────────────────────────── */
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
 }
 
 
 @media (max-width: 768px) {
   .hide-on-mobile {
     display: none !important;
+  }
+}
+
+/* ── Mobile: prevent iOS from zooming into inputs ───────────────────────────
+   On iOS, if an input/textarea has font-size < 16px the browser auto-zooms
+   when the user taps it. Setting font-size to 16px disables that zoom.
+   We only apply this at narrow viewports so desktop style is unaffected.
+──────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
   }
 }

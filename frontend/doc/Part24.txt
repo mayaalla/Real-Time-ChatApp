@@ -1,0 +1,1984 @@
+================================================================================
+  PART 24 — FRONTEND POLISH
+  Step-by-step guide written in simple language
+  Your project: /media/maya/A4E6D724E6D6F610/Maya/Chatapp/frontend
+================================================================================
+
+BEFORE YOU START — WHAT THIS PART IS ABOUT
+────────────────────────────────────────────
+This part is all about making the app feel FINISHED.
+
+Right now the app works — but "works" and "feels polished" are two different things.
+A polished app has:
+  - Typing indicators that appear and disappear correctly
+  - Read receipts that update in real time as the other person reads
+  - An online dot that goes green/grey as people connect and disconnect
+  - A browser tab title that shows how many unread messages you have
+  - Beautiful loading/empty/error states instead of blank white rectangles
+  - A UI that works with a keyboard alone (accessibility)
+  - A UI that looks good on a phone, tablet, and desktop
+
+BEFORE YOU START — CHECKLIST
+────────────────────────────────────────────
+Make sure ALL of these are true before you touch a single file:
+
+  [ ] Parts 20 through 23 are complete
+  [ ] The conversation list loads and shows conversations
+  [ ] You can open a conversation and see messages
+  [ ] You can send a message and it appears in the other tab
+  [ ] Your backend is running on http://localhost:4000
+  [ ] Your frontend is running on http://localhost:5173
+
+If any of those are not true, finish the earlier parts first.
+
+================================================================================
+
+STEP 24.1 — TYPING INDICATORS
+================================================================================
+
+WHAT WE ARE BUILDING:
+  When Alice starts typing in a conversation, Bob sees "Alice is typing…"
+  appear in the header. When she stops (or sends), it disappears.
+  For multiple people: "Alice and Bob are typing…".
+  For more than two:  "Several people are typing…".
+
+HOW IT ALREADY PARTIALLY WORKS:
+  Good news — your project already has most of this!
+  Looking at what already exists in your project:
+    - src/stores/typingStore.ts — already has the store
+    - src/components/chat/Composer.tsx — already emits typing:start and typing:stop
+    - src/components/chat/ChatHeader.tsx — already reads from typingStore
+    - src/components/ConversationItem.tsx — already shows typing in the sidebar
+
+  The "emit" side (when YOU type) is done in Composer.tsx lines 97-115.
+  The "display" side is done in ChatHeader.tsx lines 42-76.
+
+  WHAT IS MISSING: The socket event listener that receives typing:update from
+  the server and puts it into the typingStore.
+
+  Let's find where socket events are handled and add the missing listener.
+
+──────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/hooks/useConversationSocket.ts
+        (this is the file that listens to socket events for a conversation)
+──────────────────────────────────────────────────────────────────────────────
+
+Read the file and look for a listener on "typing:update". If it's missing,
+you need to add it. Here is the COMPLETE code that file should contain:
+
+──────── PASTE THIS INTO  src/hooks/useConversationSocket.ts  ────────────────
+
+import { useEffect } from "react";
+import { socket }           from "../lib/socket";
+import { useTypingStore }   from "../stores/typingStore";
+import { usePresenceStore } from "../stores/presenceStore";
+import { useConversationStore } from "../store/conversationStore";
+import { type Message }     from "../api/messages.api";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// Registers ALL socket event listeners that are relevant to the currently open
+// conversation. Call this once, in ChatArea (or wherever the conversation is open).
+//
+// Handles:
+//   typing:update   → fills typingStore so ChatHeader shows "Alice is typing…"
+//   presence:update → fills presenceStore so ChatHeader shows online dot
+//   message:new     → passed to the parent via onMessage
+//   message:status  → passed to the parent via onStatus
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface UseConversationSocketOptions {
+  conversationId: string;
+  currentUserId:  string;
+  onMessage: (msg: Message) => void;
+  onStatus:  (payload: { messageId: string; status: Message["status"] }) => void;
+}
+
+export function useConversationSocket({
+  conversationId,
+  currentUserId,
+  onMessage,
+  onStatus,
+}: UseConversationSocketOptions) {
+  const setTyping   = useTypingStore((s) => s.setTyping);
+  const setPresence = usePresenceStore((s) => s.setPresence);
+  const bumpConversation  = useConversationStore((s) => s.bumpConversation);
+
+  useEffect(() => {
+    if (!conversationId) return;
+
+    // ── typing:update ──────────────────────────────────────────────────────────
+    // Server sends us the current list of people typing in this conversation.
+    // We filter out ourselves — we already know we are typing!
+    const onTypingUpdate = (payload: { conversationId: string; typerIds: string[] }) => {
+      if (payload.conversationId !== conversationId) return;
+      const otherTypers = payload.typerIds.filter((id) => id !== currentUserId);
+      setTyping(conversationId, otherTypers);
+    };
+
+    // ── presence:update ────────────────────────────────────────────────────────
+    // Server tells us someone came online or went offline.
+    const onPresenceUpdate = (payload: {
+      userId:   string;
+      online:   boolean;
+      lastSeen: string | null;
+    }) => {
+      setPresence(payload.userId, {
+        online:   payload.online,
+        lastSeen: payload.lastSeen,
+      });
+    };
+
+    // ── message:new ────────────────────────────────────────────────────────────
+    const onMessageNew = (payload: { message: Message }) => {
+      const { message } = payload;
+      if (message.conversationId !== conversationId) return;
+      onMessage(message);
+      bumpConversation(
+        message.conversationId,
+        {
+          textBody:  message.textBody,
+          senderId:  message.senderId,
+          createdAt: message.createdAt,
+          deletedAt: message.deletedAt,
+        },
+        false,
+      );
+    };
+
+    // ── message:status ─────────────────────────────────────────────────────────
+    const onMessageStatus = (payload: {
+      messageId: string;
+      status: Message["status"];
+    }) => {
+      onStatus(payload);
+    };
+
+    socket.on("typing:update",   onTypingUpdate);
+    socket.on("presence:update", onPresenceUpdate);
+    socket.on("message:new",     onMessageNew);
+    socket.on("message:status",  onMessageStatus);
+
+    return () => {
+      socket.off("typing:update",   onTypingUpdate);
+      socket.off("presence:update", onPresenceUpdate);
+      socket.off("message:new",     onMessageNew);
+      socket.off("message:status",  onMessageStatus);
+
+      // Clear typing state when we leave the conversation.
+      // Nobody should show as "typing" in a conversation you've left.
+      setTyping(conversationId, []);
+    };
+  }, [conversationId, currentUserId, onMessage, onStatus, setTyping, setPresence, bumpConversation]);
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOW UPDATE ChatArea.tsx to USE this hook instead of its own inline listeners.
+Open  src/pages/ChatArea.tsx  and REPLACE the entire file with this:
+
+──────── REPLACE  src/pages/ChatArea.tsx  with this  ────────────────────────
+
+import { useEffect, useState, useCallback } from "react";
+import { useParams, useNavigate }           from "react-router-dom";
+import { useAuthStore }                     from "../store/authStore";
+import { useConversationStore }             from "../store/conversationStore";
+import { useConnectionStore }              from "../store/connectionStore";
+import { useConversationSocket }            from "../hooks/useConversationSocket";
+import { ChatHeader }                       from "../components/chat/ChatHeader";
+import { MessageList }                      from "../components/chat/MessageList";
+import { Composer }                         from "../components/chat/Composer";
+import { socket }                           from "../lib/socket";
+import { type Message }                     from "../api/messages.api";
+
+// Status rank — we only update if the new status is higher (never go backwards).
+const STATUS_RANK: Record<string, number> = {
+  PENDING:   0,
+  SENT:      1,
+  DELIVERED: 2,
+  READ:      3,
+  FAILED:    -1,
+};
+
+export function ChatArea() {
+  const { conversationId } = useParams<{ conversationId: string }>();
+  const navigate           = useNavigate();
+  const currentUser        = useAuthStore((s) => s.user)!;
+  const conversations      = useConversationStore((s) => s.conversations);
+  const clearUnread        = useConversationStore((s) => s.clearUnread);
+  const connectionStatus   = useConnectionStore((s) => s.status);
+  const isConnected        = connectionStatus === "connected";
+
+  const [liveMessages, setLiveMessages] = useState<Message[]>([]);
+
+  const conversation = conversations.find((c) => c.id === conversationId);
+
+  // Reset live messages when conversation changes
+  useEffect(() => {
+    setLiveMessages([]);
+    if (conversationId) clearUnread(conversationId);
+  }, [conversationId, clearUnread]);
+
+  // Callbacks for socket events
+  const handleMessage = useCallback((message: Message) => {
+    setLiveMessages((prev) => {
+      if (prev.some((m) => m.id === message.id)) return prev;
+      return [...prev, message];
+    });
+  }, []);
+
+  const handleStatus = useCallback(
+    (payload: { messageId: string; status: Message["status"] }) => {
+      setLiveMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== payload.messageId) return m;
+          if ((STATUS_RANK[payload.status] ?? -1) > (STATUS_RANK[m.status] ?? -1)) {
+            return { ...m, status: payload.status };
+          }
+          return m;
+        }),
+      );
+    },
+    [],
+  );
+
+  // Register ALL socket listeners via the custom hook
+  useConversationSocket({
+    conversationId: conversationId ?? "",
+    currentUserId:  currentUser.id,
+    onMessage:      handleMessage,
+    onStatus:       handleStatus,
+  });
+
+  const handleOptimisticSend = useCallback((message: Omit<Message, "sender">) => {
+    setLiveMessages((prev) => {
+      if (prev.some((m) => m.id === message.id)) return prev;
+      return [...prev, message as Message];
+    });
+  }, []);
+
+  if (!conversation) {
+    return (
+      <div className="flex items-center justify-center flex-1 text-muted-foreground text-sm">
+        Loading conversation…
+      </div>
+    );
+  }
+
+  const headerConversation = {
+    id:             conversation.id,
+    isGroup:        conversation.isGroup,
+    displayName:    conversation.displayName,
+    displayPicture: conversation.displayPicture,
+    participants:   conversation.participants.map((p) => ({
+      id:            p.id,
+      username:      p.username,
+      avatarAddress: null as string | null,
+      lastSeen:      null as string | null,
+    })),
+  };
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <ChatHeader
+        conversation={headerConversation}
+        onBack={() => navigate("/")}
+      />
+      <MessageList
+        conversationId={conversation.id}
+        conversationName={conversation.displayName}
+        isGroup={conversation.isGroup}
+        liveMessages={liveMessages}
+      />
+      <Composer
+        conversationId={conversation.id}
+        socket={socket}
+        isConnected={isConnected}
+        onOptimisticSend={handleOptimisticSend}
+      />
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOW CHECK:  src/components/chat/ChatHeader.tsx
+
+  The ChatHeader already handles the display correctly. But the "typing" text
+  in the header currently only says "typing…" for DMs. We need a small fix:
+  it should say "Alice is typing…" (with the name), not just "typing…".
+
+  Open  src/components/chat/ChatHeader.tsx
+  Find this function (around line 54):
+    function getStatusLine(): string {
+
+  Find this line inside it:
+    if (typerIds.length > 0) return "typing…";
+
+  CHANGE that one line to this block:
+
+──────── CHANGE the "typing…" line inside getStatusLine() ────────────────────
+
+    // Build a friendly "Alice is typing…" or "Alice and Bob are typing…" message.
+    if (typerIds.length === 1) {
+      const typerName = conversation.participants.find(
+        (p) => p.id === typerIds[0]
+      )?.username ?? "Someone";
+      return `${typerName} is typing…`;
+    }
+    if (typerIds.length === 2) {
+      const names = typerIds.map(
+        (id) => conversation.participants.find((p) => p.id === id)?.username ?? "Someone"
+      );
+      return `${names[0]} and ${names[1]} are typing…`;
+    }
+    if (typerIds.length > 2) {
+      return "Several people are typing…";
+    }
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Open two browser tabs. Log in as two different users.
+   • In tab A, start typing in a shared conversation.
+   • In tab B, the header shows "Alice is typing…" within 1-2 seconds.
+   • In tab A, press Enter to send.
+   • In tab B, the "typing…" indicator disappears immediately.
+   • Wait 4 seconds without typing — indicator also disappears automatically.
+
+================================================================================
+
+STEP 24.2 — READ RECEIPTS ON SCREEN
+================================================================================
+
+WHAT WE ARE BUILDING:
+  When YOUR message is read by the other person, the tick marks under your
+  message change. The states are:
+    ⏳  (clock icon)   = PENDING  (you typed it, socket hasn't confirmed yet)
+    ✓   (one grey)     = SENT     (server saved it, not yet delivered)
+    ✓✓  (two grey)     = DELIVERED (it arrived on their device)
+    ✓✓  (two BLUE)     = READ     (they actually SAW it on screen)
+    !   (red warning)  = FAILED   (send failed — show retry)
+
+HOW IT ALREADY PARTIALLY WORKS:
+  StatusTick in MessageBubble.tsx already renders all the visual states.
+  The server already pushes "message:status" events when status changes.
+
+  WHAT IS MISSING:
+  The "READ" trigger — your frontend needs to:
+    1. Watch which messages are VISIBLE in the viewport (IntersectionObserver)
+    2. Only mark them read when the BROWSER TAB IS FOCUSED (document.hasFocus())
+    3. Batch the calls — send ONE event with the newest visible message ID
+       (never send one event per message as the user scrolls)
+    4. When the user sends a read receipt, emit:
+         socket.emit("message:read", { conversationId, lastReadMessageId })
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Create a new file inside  src/hooks/
+        Name it:  useReadReceipts.ts
+─────────────────────────────────────────────────────────────────────────────
+
+──────── PASTE THIS INTO  src/hooks/useReadReceipts.ts  ──────────────────────
+
+import { useEffect, useRef, useCallback } from "react";
+import { socket } from "../lib/socket";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// Watches which messages are visible in the viewport and sends a "message:read"
+// socket event when the user has seen them — BUT ONLY if:
+//   1. The browser tab is currently focused (document.hasFocus())
+//   2. The message is actually in the viewport (IntersectionObserver)
+//
+// It batches: it does NOT send one event per message. It waits 400ms after the
+// last scroll movement, then sends ONE event for the newest visible message.
+// The server marks everything up to and including that message as read.
+//
+// HOW TO USE:
+//   const { observeMessage, unobserveMessage } = useReadReceipts({ conversationId });
+//   // Then call observeMessage(messageId, messageElement) for each MessageBubble.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface UseReadReceiptsOptions {
+  conversationId: string;
+  isConnected:    boolean;
+}
+
+export function useReadReceipts({ conversationId, isConnected }: UseReadReceiptsOptions) {
+  // Tracks which messages are currently visible { messageId → element }
+  const visibleMessages = useRef<Map<string, Element>>(new Map());
+
+  // The "newest visible message" — we update this as messages enter/leave viewport
+  const newestVisibleId = useRef<string | null>(null);
+
+  // Timer ref for debouncing the read event
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The IntersectionObserver instance
+  const observerRef = useRef<IntersectionObserver | null>(null);
+
+  // ── sendReadReceipt ────────────────────────────────────────────────────────
+  // This is the function that actually emits the socket event.
+  // It only fires if: tab is focused AND there is a newest visible message.
+  const sendReadReceipt = useCallback(() => {
+    if (!isConnected) return;                  // no point if offline
+    if (!document.hasFocus()) return;          // tab must be focused
+    if (!newestVisibleId.current) return;      // must have a message to mark
+
+    socket.emit("message:read", {
+      conversationId,
+      lastReadMessageId: newestVisibleId.current,
+    });
+  }, [conversationId, isConnected]);
+
+  // ── scheduleSend ──────────────────────────────────────────────────────────
+  // Debounce: wait 400ms after the last scroll before sending.
+  const scheduleSend = useCallback(() => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(sendReadReceipt, 400);
+  }, [sendReadReceipt]);
+
+  // ── Create the IntersectionObserver ───────────────────────────────────────
+  useEffect(() => {
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const messageId = (entry.target as HTMLElement).dataset.messageId;
+          if (!messageId) continue;
+
+          if (entry.isIntersecting) {
+            visibleMessages.current.set(messageId, entry.target);
+          } else {
+            visibleMessages.current.delete(messageId);
+          }
+        }
+
+        // Find the newest visible message by comparing sorted messageIds.
+        // We assume messageIds are UUIDs and the messages array is sorted oldest→newest.
+        // A simpler approach: we store a "createdAt" on the element as a data attribute
+        // and pick the largest one. We use data-message-time for this.
+        let newestTime = -Infinity;
+        let newestId: string | null = null;
+
+        for (const [msgId, el] of visibleMessages.current.entries()) {
+          const timeStr = (el as HTMLElement).dataset.messageTime;
+          if (!timeStr) continue;
+          const t = new Date(timeStr).getTime();
+          if (t > newestTime) {
+            newestTime = t;
+            newestId   = msgId;
+          }
+        }
+
+        newestVisibleId.current = newestId;
+        scheduleSend();
+      },
+      { threshold: 0.5 }, // message must be 50% visible to count as "seen"
+    );
+
+    return () => {
+      observerRef.current?.disconnect();
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
+  }, [scheduleSend]);
+
+  // ── Send when the tab regains focus ───────────────────────────────────────
+  useEffect(() => {
+    const onFocus = () => sendReadReceipt();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [sendReadReceipt]);
+
+  // ── Functions to observe / unobserve individual message elements ──────────
+  const observeMessage = useCallback(
+    (messageId: string, element: Element | null) => {
+      if (!element || !observerRef.current) return;
+      observerRef.current.observe(element);
+    },
+    [],
+  );
+
+  const unobserveMessage = useCallback(
+    (_messageId: string, element: Element | null) => {
+      if (!element || !observerRef.current) return;
+      observerRef.current.unobserve(element);
+    },
+    [],
+  );
+
+  return { observeMessage, unobserveMessage };
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOW UPDATE MessageBubble.tsx so each bubble registers itself with the observer.
+
+Open  src/components/chat/MessageBubble.tsx
+REPLACE the entire file with this:
+
+──────── REPLACE  src/components/chat/MessageBubble.tsx  with this  ──────────
+
+import { useRef, useEffect } from "react";
+import { format } from "date-fns";
+import { Download } from "lucide-react";
+import { type Message } from "../../api/messages.api";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// Renders ONE message bubble. Handles:
+//   - Own vs other alignment and colour
+//   - Deleted message placeholder
+//   - Edited indicator
+//   - Status ticks (own messages only):
+//       ⏳ = PENDING (optimistic, not confirmed by server yet)
+//       ✓  = SENT    (server saved it)
+//       ✓✓ = DELIVERED (recipient device received it)
+//       ✓✓ = READ    (recipient saw it — shown in blue)
+//       !  = FAILED  (send failed)
+//   - Image attachments
+//   - File attachments
+//   - Intersection observation for read receipts
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface MessageBubbleProps {
+  message:        Message;
+  isOwn:          boolean;
+  showSenderInfo: boolean;
+  isGroup:        boolean;
+  // Optional: called when this bubble becomes / leaves the viewport.
+  // Used by useReadReceipts. Only pass this for OTHER people's messages
+  // (we don't need to mark our own messages as read).
+  onVisible?: (messageId: string, el: Element | null) => void;
+  onHidden?:  (messageId: string, el: Element | null) => void;
+}
+
+// ── StatusTick ────────────────────────────────────────────────────────────────
+// Shows the delivery/read status for YOUR OWN messages.
+// Screen-reader accessible: aria-label explains what each icon means.
+function StatusTick({ status }: { status: Message["status"] }) {
+  if (status === "PENDING")   return (
+    <span className="text-[10px] text-muted-foreground/60" aria-label="Sending">⏳</span>
+  );
+  if (status === "FAILED")    return (
+    <span className="text-[10px] text-destructive" aria-label="Failed to send">⚠</span>
+  );
+  if (status === "SENT")      return (
+    <span className="text-[10px] text-muted-foreground" aria-label="Sent">✓</span>
+  );
+  if (status === "DELIVERED") return (
+    <span className="text-[10px] text-muted-foreground" aria-label="Delivered">✓✓</span>
+  );
+  if (status === "READ")      return (
+    <span className="text-[10px] text-blue-400" aria-label="Read">✓✓</span>
+  );
+  return null;
+}
+
+// ── Guess if a URL is an image ────────────────────────────────────────────────
+function isImageUrl(url: string): boolean {
+  return /\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(url);
+}
+
+// ── Extract a filename from a URL ─────────────────────────────────────────────
+function filenameFromUrl(url: string): string {
+  try {
+    const path = new URL(url).pathname;
+    return decodeURIComponent(path.split("/").pop() ?? "file");
+  } catch {
+    return "file";
+  }
+}
+
+export function MessageBubble({
+  message,
+  isOwn,
+  showSenderInfo,
+  isGroup,
+  onVisible,
+  onHidden,
+}: MessageBubbleProps) {
+  const isDeleted = !!message.deletedAt;
+  const isEdited  = !isDeleted && !!message.editedAt;
+  const time      = format(new Date(message.createdAt), "HH:mm");
+
+  // ── Intersection observation for read receipts ─────────────────────────────
+  // We only observe OTHER people's messages.
+  // We attach the messageId and createdAt as data attributes so the observer
+  // can find them without closing over stale values.
+  const bubbleRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isOwn || !onVisible) return;   // only observe others' messages
+    const el = bubbleRef.current;
+    if (!el) return;
+
+    onVisible(message.id, el);
+    return () => {
+      onHidden?.(message.id, el);
+    };
+  }, [message.id, isOwn, onVisible, onHidden]);
+
+  return (
+    <div
+      className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : "flex-row"} ${
+        showSenderInfo ? "mt-3" : "mt-0.5"
+      }`}
+    >
+      {/* Avatar column — groups only, other people's messages only */}
+      {isGroup && !isOwn && (
+        <div className="w-7 shrink-0 self-end mb-1">
+          {showSenderInfo && message.sender && (
+            message.sender.avatarAddress ? (
+              <img
+                src={message.sender.avatarAddress}
+                alt={message.sender.username}
+                className="w-7 h-7 rounded-full object-cover"
+              />
+            ) : (
+              <div className="w-7 h-7 rounded-full bg-secondary flex items-center
+                              justify-center text-xs font-semibold text-secondary-foreground">
+                {message.sender.username.charAt(0).toUpperCase()}
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {/* Bubble column */}
+      <div
+        ref={bubbleRef}
+        // data attributes let the IntersectionObserver pick up the message id and time
+        data-message-id={message.id}
+        data-message-time={message.createdAt}
+        className={`flex flex-col max-w-[70%] ${isOwn ? "items-end" : "items-start"}`}
+      >
+
+        {/* Sender name — groups, first message of run, not own */}
+        {isGroup && !isOwn && showSenderInfo && message.sender && (
+          <p className="text-xs text-muted-foreground font-medium mb-1 ml-1">
+            {message.sender.username}
+          </p>
+        )}
+
+        {/* The bubble */}
+        <div
+          className={`rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+            isOwn
+              ? "bg-primary text-primary-foreground rounded-br-sm"
+              : "bg-secondary text-secondary-foreground rounded-bl-sm"
+          }`}
+        >
+          {isDeleted ? (
+            <span className="italic opacity-60 text-xs">Message deleted</span>
+          ) : (
+            <>
+              {/* Attachments */}
+              {(message.attachments?.length ?? 0) > 0 && (
+                <div className="flex flex-col gap-2 mb-1">
+                  {message.attachments.map((url) =>
+                    isImageUrl(url) ? (
+                      <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+                        <img
+                          src={url}
+                          alt="attachment"
+                          className="max-w-[240px] rounded-xl object-cover cursor-pointer
+                                     hover:opacity-90 transition-opacity"
+                          loading="lazy"
+                        />
+                      </a>
+                    ) : (
+                      <a
+                        key={url}
+                        href={url}
+                        download
+                        className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs
+                                   font-medium no-underline transition-opacity hover:opacity-80 ${
+                                     isOwn
+                                       ? "bg-white/20 text-primary-foreground"
+                                       : "bg-background text-foreground border border-border"
+                                   }`}
+                      >
+                        <Download size={14} className="shrink-0" />
+                        <span className="truncate max-w-[160px]">
+                          {filenameFromUrl(url)}
+                        </span>
+                      </a>
+                    )
+                  )}
+                </div>
+              )}
+
+              {/* Message text */}
+              {message.textBody && (
+                <p className="whitespace-pre-wrap break-words break-all">
+                  {message.textBody}
+                </p>
+              )}
+            </>
+          )}
+
+          {/* Time + edited label + status ticks */}
+          <div
+            className={`flex items-center gap-1 mt-1 ${
+              isOwn ? "justify-end" : "justify-start"
+            }`}
+          >
+            {isEdited && (
+              <span
+                className={`text-[10px] ${
+                  isOwn ? "text-primary-foreground/60" : "text-muted-foreground"
+                }`}
+              >
+                edited
+              </span>
+            )}
+            <span
+              className={`text-[10px] ${
+                isOwn ? "text-primary-foreground/60" : "text-muted-foreground"
+              }`}
+            >
+              {time}
+            </span>
+            {isOwn && !isDeleted && <StatusTick status={message.status} />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOW UPDATE MessageList.tsx to wire up read receipts.
+
+Open  src/components/chat/MessageList.tsx
+REPLACE the entire file with this:
+
+──────── REPLACE  src/components/chat/MessageList.tsx  with this  ────────────
+
+import { useEffect, useRef, useState, useCallback } from "react";
+import { ArrowDown } from "lucide-react";
+import { useAuthStore }         from "../../store/authStore";
+import { useConnectionStore }   from "../../store/connectionStore";
+import { useMessageHistory }    from "../../hooks/useMessageHistory";
+import { useScrollManager }     from "../../hooks/useScrollManager";
+import { useReadReceipts }      from "../../hooks/useReadReceipts";
+import { MessageListSkeleton }  from "./MessageListSkeleton";
+import { EmptyConversation }    from "./EmptyConversation";
+import { MessageBubble }        from "./MessageBubble";
+import { buildMessageGroups }   from "../../utils/messageGrouping";
+import { type Message }         from "../../api/messages.api";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// The scrollable message area.
+// It:
+//  - Loads message history from the REST API
+//  - Merges live socket messages (from the liveMessages prop)
+//  - Handles 4 scroll situations (first load, new msg at bottom, new msg while
+//    scrolled up, loading older messages)
+//  - Registers an IntersectionObserver so we can send read receipts
+//    only for messages the user actually sees
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface MessageListProps {
+  conversationId:   string;
+  conversationName: string;
+  isGroup:          boolean;
+  liveMessages:     Message[];
+}
+
+export function MessageList({
+  conversationId,
+  conversationName,
+  isGroup,
+  liveMessages,
+}: MessageListProps) {
+  const currentUser      = useAuthStore((s) => s.user);
+  const connectionStatus = useConnectionStore((s) => s.status);
+  const isConnected      = connectionStatus === "connected";
+
+  const { messages, isLoading, isFetchingMore, hasMore, loadMore } =
+    useMessageHistory(conversationId);
+
+  const { containerRef, scrollToBottom, isAtBottom, captureHeight, restoreHeight } =
+    useScrollManager();
+
+  // Hook that sends read receipts when messages are visible and tab is focused.
+  const { observeMessage, unobserveMessage } = useReadReceipts({
+    conversationId,
+    isConnected,
+  });
+
+  const [showNewPill, setShowNewPill] = useState(false);
+  const isFirstLoad   = useRef(true);
+  const prevLiveCount = useRef(0);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+
+  // Merge REST history with live socket messages, de-duplicate by id.
+  const historyIds  = new Set(messages.map((m) => m.id));
+  const allMessages = [
+    ...messages,
+    ...liveMessages.filter((m) => !historyIds.has(m.id)),
+  ];
+
+  // Build display groups (date dividers + consecutive-run metadata).
+  const groups = buildMessageGroups(allMessages, currentUser?.id);
+
+  // SITUATION 1: First load → jump to bottom instantly.
+  useEffect(() => {
+    if (!isLoading && isFirstLoad.current) {
+      isFirstLoad.current = false;
+      setTimeout(() => scrollToBottom(false), 0);
+    }
+  }, [isLoading, scrollToBottom]);
+
+  // SITUATION 2 & 3: New live message arrived.
+  useEffect(() => {
+    if (liveMessages.length <= prevLiveCount.current) return;
+    prevLiveCount.current = liveMessages.length;
+    if (isFirstLoad.current) return;
+
+    if (isAtBottom()) {
+      scrollToBottom(true);
+    } else {
+      setShowNewPill(true);
+    }
+  }, [liveMessages.length, isAtBottom, scrollToBottom]);
+
+  // SITUATION 4: Loading older messages → preserve scroll position.
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !isFetchingMore) {
+          captureHeight();
+          loadMore().then(() => {
+            restoreHeight();
+          });
+        }
+      },
+      { root: containerRef.current, threshold: 0 },
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, isFetchingMore, loadMore, captureHeight, restoreHeight, containerRef]);
+
+  const handlePillClick = useCallback(() => {
+    scrollToBottom(true);
+    setShowNewPill(false);
+  }, [scrollToBottom]);
+
+  const handleScroll = useCallback(() => {
+    if (isAtBottom()) setShowNewPill(false);
+  }, [isAtBottom]);
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+  if (isLoading) return <MessageListSkeleton />;
+
+  if (allMessages.length === 0) {
+    return <EmptyConversation name={conversationName} />;
+  }
+
+  return (
+    <div className="relative flex flex-col flex-1 overflow-hidden">
+
+      {/* The scrollable container */}
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        // aria-live="polite" makes screen readers announce new messages politely.
+        // "polite" means: finish reading what you are reading, THEN announce the new message.
+        // "assertive" would interrupt — we do NOT want that for chat.
+        aria-live="polite"
+        aria-label="Message history"
+        role="log"
+        className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-1"
+        style={{ overscrollBehavior: "contain" }}
+      >
+        {/* Sentinel: becomes visible when the user scrolls to the very top */}
+        <div ref={topSentinelRef} className="h-px shrink-0" />
+
+        {/* Loading spinner for older pages */}
+        {isFetchingMore && (
+          <div className="flex justify-center py-3">
+            <div className="w-5 h-5 rounded-full border-2 border-muted
+                            border-t-primary animate-spin" />
+          </div>
+        )}
+
+        {/* "Beginning of history" label */}
+        {!hasMore && allMessages.length > 0 && (
+          <p className="text-center text-xs text-muted-foreground py-2">
+            Beginning of conversation
+          </p>
+        )}
+
+        {/* Render date dividers and message bubbles */}
+        {groups.map((item, i) => {
+          if (item.type === "date-divider") {
+            return (
+              <div key={`divider-${item.label}-${i}`}
+                   className="flex items-center gap-3 my-3">
+                <div className="flex-1 h-px bg-border" />
+                <span className="text-xs text-muted-foreground px-2">
+                  {item.label}
+                </span>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+            );
+          }
+          const isOwn = item.isOwn;
+          return (
+            <MessageBubble
+              key={item.message.id}
+              message={item.message}
+              isOwn={isOwn}
+              showSenderInfo={item.showSenderInfo}
+              isGroup={isGroup}
+              // Only pass read-receipt callbacks for other people's messages.
+              onVisible={isOwn ? undefined : observeMessage}
+              onHidden={isOwn ? undefined : unobserveMessage}
+            />
+          );
+        })}
+      </div>
+
+      {/* "↓ New messages" pill — Situation 3 */}
+      {showNewPill && (
+        <button
+          onClick={handlePillClick}
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10
+                     flex items-center gap-1.5 px-4 py-2 rounded-full
+                     bg-primary text-primary-foreground text-sm font-medium
+                     shadow-md hover:opacity-90 transition-opacity"
+        >
+          <ArrowDown size={14} />
+          New messages
+        </button>
+      )}
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Open two browser tabs. Log in as two different users. Open the same DM.
+   • In tab A, send a message. You see one grey ✓ (SENT).
+   • Tab B is open in the same conversation → ticks become ✓✓ grey (DELIVERED).
+   • Scroll the message into view in tab B while tab B is focused →
+     ticks in tab A become ✓✓ BLUE (READ).
+   • Switch tab B away (go to a different tab in your browser) then get a new
+     message in tab A sent to B — ticks only go blue AFTER you switch back to B.
+
+================================================================================
+
+STEP 24.3 — PRESENCE ON SCREEN
+================================================================================
+
+WHAT WE ARE BUILDING:
+  - A green dot next to the avatar in the conversation list when a user is online.
+  - A green dot in the chat header when the person you are DMing is online.
+  - A "last seen X minutes ago" text in the header when they are offline.
+  - Exact formats required:
+      online                  → "online" (shown in green)
+      offline, seen recently  → "last seen just now"       (< 1 minute ago)
+      offline                 → "last seen 10 minutes ago" (use date-fns)
+      offline, previous day   → "last seen yesterday at 21:14"
+      offline, older          → "last seen Mon at 09:30"   (or similar)
+
+HOW IT ALREADY PARTIALLY WORKS:
+  Good news — the presence display is ALREADY working in your project!
+    - ConversationItem.tsx already shows the green dot in the list
+    - ChatHeader.tsx already shows the green dot and "last seen" text
+
+  The ChatHeader uses formatDistanceToNow from date-fns which gives relative
+  text like "about 10 minutes ago". The specification asks for friendlier text.
+
+  Let us improve the time formatting utility to match the required format exactly.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/utils/time.ts
+        REPLACE the entire file with this improved version:
+─────────────────────────────────────────────────────────────────────────────
+
+──────── REPLACE  src/utils/time.ts  with this  ──────────────────────────────
+
+import {
+  formatDistanceToNowStrict,
+  isToday,
+  isYesterday,
+  format,
+  differenceInMinutes,
+  differenceInSeconds,
+} from "date-fns";
+
+// ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
+//
+// Converts ISO date strings into friendly human-readable relative time strings.
+//
+// relativeTime() — used in conversation list preview timestamps
+//   "5 min ago", "22 hrs ago", "5 days ago"
+//
+// lastSeenText() — used in the chat header presence line
+//   "last seen just now"
+//   "last seen 10 minutes ago"
+//   "last seen yesterday at 21:14"
+//   "last seen Mon at 09:30"
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── relativeTime ──────────────────────────────────────────────────────────────
+// Short relative time for conversation list timestamps.
+export function relativeTime(isoString: string | null | undefined): string {
+  if (!isoString) return "";
+  try {
+    return formatDistanceToNowStrict(new Date(isoString), { addSuffix: true });
+  } catch {
+    return "";
+  }
+}
+
+// ── lastSeenText ──────────────────────────────────────────────────────────────
+// Friendly "last seen …" text for the chat header.
+// Returns just the time description (without the "last seen" prefix),
+// so the caller can prepend it if needed.
+export function lastSeenText(isoString: string | null | undefined): string {
+  if (!isoString) return "a long time ago";
+  try {
+    const date = new Date(isoString);
+    const nowDate = new Date();
+
+    const secondsAgo  = differenceInSeconds(nowDate, date);
+    const minutesAgo  = differenceInMinutes(nowDate, date);
+
+    // Less than 1 minute ago → "just now"
+    if (secondsAgo < 60) return "just now";
+
+    // Less than 1 hour → "10 minutes ago"
+    if (minutesAgo < 60) return `${minutesAgo} minute${minutesAgo === 1 ? "" : "s"} ago`;
+
+    // Today → "today at 14:32"
+    if (isToday(date)) return `today at ${format(date, "HH:mm")}`;
+
+    // Yesterday → "yesterday at 21:14"
+    if (isYesterday(date)) return `yesterday at ${format(date, "HH:mm")}`;
+
+    // Within the last week → "Mon at 09:30"
+    const daysAgo = Math.floor(secondsAgo / 86400);
+    if (daysAgo < 7) return `${format(date, "EEE")} at ${format(date, "HH:mm")}`;
+
+    // Older → "12 Oct at 09:30"
+    return `${format(date, "d MMM")} at ${format(date, "HH:mm")}`;
+  } catch {
+    return "a long time ago";
+  }
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOW UPDATE ChatHeader.tsx to use the new lastSeenText() function.
+
+Open  src/components/chat/ChatHeader.tsx
+Find this import at the top:
+  import { formatDistanceToNow } from "date-fns";
+
+REPLACE that import line with:
+  import { lastSeenText } from "../../utils/time";
+
+Then find this line inside getStatusLine():
+  return `last seen ${formatDistanceToNow(new Date(lastSeen), { addSuffix: true })}`;
+
+CHANGE it to:
+  return `last seen ${lastSeenText(lastSeen)}`;
+
+──────────────────────────────────────────────────────────────────────────────
+
+ALSO MAKE SURE: The presence:snapshot event is handled on socket connect.
+Open  src/hooks/useSocketEvents.ts  (or wherever the global socket listeners live).
+Look for "presence:fetch" and "presence:snapshot".
+If they are missing, add them. Here is the correct pattern:
+
+──────── ADD inside the socket "connect" event handler  ──────────────────────
+
+  // When the socket connects (or reconnects), request a snapshot of everyone's
+  // online status so we can show the green dots immediately without waiting
+  // for individual presence:update events.
+  socket.emit("presence:fetch");
+
+──────── ADD a listener for the snapshot response  ───────────────────────────
+
+  socket.on("presence:snapshot", (list: Array<{ userId: string; online: boolean; lastSeen?: string | null }>) => {
+    const { setPresenceMap } = usePresenceStore.getState();
+    const newMap = new Map<string, { online: boolean; lastSeen: string | null }>();
+    for (const entry of list) {
+      newMap.set(entry.userId, {
+        online:   entry.online,
+        lastSeen: entry.lastSeen ?? null,
+      });
+    }
+    setPresenceMap(newMap);
+  });
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Open two browser tabs logged in as two different users.
+   • Both users see each other's green dot in the conversation list.
+   • Open the DM between them in tab A — the header says "online" in green.
+   • Close tab B completely (close the browser window).
+   • Within 5 seconds, tab A's header changes to "last seen just now".
+   • After 2 minutes, tab A shows "last seen 2 minutes ago".
+
+================================================================================
+
+STEP 24.4 — NOTIFICATIONS
+================================================================================
+
+WHAT WE ARE BUILDING:
+  1. The browser tab TITLE shows unread count: "(3) Chat App" when you have 3 unread.
+  2. When a message arrives while your tab is NOT focused:
+       - Optionally plays a short sound (with a user setting to turn it off).
+       - Optionally shows a browser notification (requires the user's permission).
+  3. When you return to the tab, the count clears and the title goes back to normal.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Create a new file inside  src/hooks/
+        Name it:  useNotifications.ts
+─────────────────────────────────────────────────────────────────────────────
+
+──────── PASTE THIS INTO  src/hooks/useNotifications.ts  ─────────────────────
+
+import { useEffect, useRef } from "react";
+import { useConversationStore } from "../store/conversationStore";
+
+// ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
+//
+// 1. Watches the total unread count across all conversations.
+// 2. Updates the browser tab title to show the count, e.g. "(3) Chat App".
+// 3. When a new message arrives while the tab is NOT focused:
+//      a. Shows a browser notification (if the user granted permission).
+//      b. Plays a short notification sound (if the setting is enabled).
+// 4. When the tab regains focus, resets the title to "Chat App".
+//
+// HOW TO USE:
+//   Call this hook once, in App.tsx or ChatShell.tsx:
+//     useNotifications();
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+const APP_TITLE = "Chat App";
+
+// A tiny in-memory notification sound using the Web Audio API.
+// This avoids needing any audio file on disk.
+function playNotificationSound() {
+  try {
+    const ctx = new AudioContext();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+
+    oscillator.frequency.setValueAtTime(880, ctx.currentTime);           // A5 note
+    oscillator.frequency.setValueAtTime(660, ctx.currentTime + 0.08);   // E5 note
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+
+    oscillator.start(ctx.currentTime);
+    oscillator.stop(ctx.currentTime + 0.25);
+  } catch {
+    // Web Audio API not available — silently ignore.
+  }
+}
+
+// Ask the user for browser notification permission (only asks once).
+async function requestNotificationPermission() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default") {
+    await Notification.requestPermission();
+  }
+}
+
+// Show a browser notification.
+function showBrowserNotification(title: string, body: string) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+
+  new Notification(title, {
+    body,
+    icon: "/favicon.ico",   // use whatever icon your app has
+    tag:  "new-message",    // replaces any previous notification (prevents spam)
+  });
+}
+
+export function useNotifications() {
+  const conversations  = useConversationStore((s) => s.conversations);
+  const prevUnreadRef  = useRef(0);
+
+  // ── Total unread across all conversations ──────────────────────────────────
+  const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadCount ?? 0), 0);
+
+  // ── Update browser tab title ───────────────────────────────────────────────
+  useEffect(() => {
+    if (totalUnread > 0) {
+      document.title = `(${totalUnread}) ${APP_TITLE}`;
+    } else {
+      document.title = APP_TITLE;
+    }
+  }, [totalUnread]);
+
+  // ── Clear title when tab gains focus ──────────────────────────────────────
+  useEffect(() => {
+    const onFocus = () => {
+      // The title will be updated on the next render when unread clears.
+      // But we also reset it immediately as a safety net.
+      if (totalUnread === 0) {
+        document.title = APP_TITLE;
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [totalUnread]);
+
+  // ── Play sound and show notification when new unread arrives ──────────────
+  useEffect(() => {
+    const currentUnread = totalUnread;
+    const prevUnread    = prevUnreadRef.current;
+    prevUnreadRef.current = currentUnread;
+
+    // Only trigger if the count went UP (new message) AND the tab is NOT focused.
+    if (currentUnread > prevUnread && !document.hasFocus()) {
+      // Sound — check user setting (we read from localStorage for simplicity)
+      const soundEnabled = localStorage.getItem("notifSound") !== "false";
+      if (soundEnabled) {
+        playNotificationSound();
+      }
+
+      // Browser notification — requires permission
+      const notifEnabled = localStorage.getItem("notifBrowser") !== "false";
+      if (notifEnabled) {
+        showBrowserNotification(
+          APP_TITLE,
+          `You have ${currentUnread} unread message${currentUnread === 1 ? "" : "s"}`,
+        );
+      }
+    }
+  }, [totalUnread]);
+
+  // ── Request permission once (as early as possible) ────────────────────────
+  useEffect(() => {
+    requestNotificationPermission();
+  }, []);
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOW CALL THE HOOK in your shell.
+Open  src/layouts/ChatShell.tsx
+Add this import at the top:
+  import { useNotifications } from "../hooks/useNotifications";
+
+Then, INSIDE the ChatShell component function, add this line:
+  useNotifications();
+
+That is the only change needed to ChatShell.tsx.
+
+──────────────────────────────────────────────────────────────────────────────
+
+OPTIONAL — Add a settings toggle for sound and browser notifications.
+
+If you want users to be able to turn off the sound or browser notifications,
+add these two toggles to any settings panel. Here is the logic (no full component
+shown — just the key pieces):
+
+──────── EXAMPLE TOGGLE LOGIC ────────────────────────────────────────────────
+
+  // Read current setting (defaults to ON if not set)
+  const soundOn   = localStorage.getItem("notifSound")   !== "false";
+  const browserOn = localStorage.getItem("notifBrowser") !== "false";
+
+  // Toggle handlers
+  const toggleSound = () => {
+    localStorage.setItem("notifSound", soundOn ? "false" : "true");
+    // Re-render with state if you use useState for this
+  };
+
+  const toggleBrowser = () => {
+    localStorage.setItem("notifBrowser", browserOn ? "false" : "true");
+  };
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • Open two browser tabs. Log in as two different users.
+   • Click somewhere else so tab A is NOT focused (click tab B).
+   • In tab B, send a message to tab A's user.
+   • Tab A's title (visible in the taskbar/tab bar) changes to "(1) Chat App".
+   • Click back on tab A and open the conversation → title goes back to "Chat App".
+   • If you allowed notifications, a small browser notification appeared while tab A
+     was in the background.
+
+================================================================================
+
+STEP 24.5 — ERROR, EMPTY AND LOADING STATES
+================================================================================
+
+WHAT WE ARE BUILDING:
+  Every place that currently shows a blank white rectangle while it loads,
+  or stays blank when empty, or crashes silently when there is an error —
+  will now show a BEAUTIFUL intentional state.
+
+  LOADING STATES:
+    - Conversation list skeleton (already exists as MessageListSkeleton)
+    - Message history skeleton (already exists as MessageListSkeleton)
+    - "Load older messages" spinner (already exists in MessageList.tsx)
+    - Send button disabled while uploading (already exists in Composer.tsx)
+
+  EMPTY STATES:
+    - No conversations yet (we will build this)
+    - No messages yet (already exists as EmptyConversation.tsx)
+    - No search results (we will build this)
+
+  ERROR STATES:
+    - Socket disconnected banner (already exists as ConnectionBanner.tsx)
+    - Upload failed (already exists in Composer.tsx)
+    - Request failed with retry action (we will build this)
+    - Session expired (already handled by auth flow)
+
+Let's build the missing pieces.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Open  src/components/EmptyState.tsx
+        (it already exists — let's check if it covers all our cases)
+─────────────────────────────────────────────────────────────────────────────
+
+If the file doesn't have a "no conversations" state, REPLACE the entire file
+with this complete version:
+
+──────── REPLACE  src/components/EmptyState.tsx  with this  ──────────────────
+
+import { MessageSquare, Search, AlertCircle, RefreshCw } from "lucide-react";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// A reusable empty/error state component.
+// Use it whenever there is nothing to show, or when something went wrong.
+//
+// VARIANTS:
+//   "no-conversations"  → "No conversations yet. Start one!"
+//   "no-messages"       → "No messages yet. Say hello!"
+//   "no-results"        → "No results found for '...'"
+//   "error"             → "Something went wrong." with an optional retry button
+//
+// HOW TO USE:
+//   <EmptyState variant="no-conversations" />
+//   <EmptyState variant="error" onRetry={() => refetch()} />
+//   <EmptyState variant="no-results" searchTerm="alice" />
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface EmptyStateProps {
+  variant:     "no-conversations" | "no-messages" | "no-results" | "error";
+  searchTerm?: string;      // used when variant = "no-results"
+  onRetry?:    () => void;  // used when variant = "error"
+}
+
+export function EmptyState({ variant, searchTerm, onRetry }: EmptyStateProps) {
+
+  // ── Content based on variant ─────────────────────────────────────────────────
+  const content = {
+    "no-conversations": {
+      icon:    <MessageSquare size={40} className="text-muted-foreground/40" />,
+      title:   "No conversations yet",
+      message: "Click the pencil icon to start a new chat.",
+      action:  null,
+    },
+    "no-messages": {
+      icon:    <MessageSquare size={40} className="text-muted-foreground/40" />,
+      title:   "No messages yet",
+      message: "Be the first to say hello! 👋",
+      action:  null,
+    },
+    "no-results": {
+      icon:    <Search size={40} className="text-muted-foreground/40" />,
+      title:   "No results found",
+      message: searchTerm
+               ? `We couldn't find anyone matching "${searchTerm}".`
+               : "Try a different search term.",
+      action:  null,
+    },
+    "error": {
+      icon:    <AlertCircle size={40} className="text-destructive/60" />,
+      title:   "Something went wrong",
+      message: "We couldn't load this content. Please try again.",
+      action:  onRetry ? (
+        <button
+          onClick={onRetry}
+          className="mt-4 flex items-center gap-2 px-4 py-2 rounded-xl
+                     bg-primary text-primary-foreground text-sm font-medium
+                     hover:opacity-90 transition-opacity"
+        >
+          <RefreshCw size={14} />
+          Try again
+        </button>
+      ) : null,
+    },
+  }[variant];
+
+  return (
+    <div className="flex flex-col items-center justify-center flex-1
+                    text-center px-6 py-12 select-none">
+      <div className="mb-4">{content.icon}</div>
+      <p className="text-base font-semibold text-foreground">{content.title}</p>
+      <p className="text-sm text-muted-foreground mt-1 max-w-xs">{content.message}</p>
+      {content.action}
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+NOW UPDATE ConversationSidebar.tsx to show the empty state when there are
+no conversations.
+
+Open  src/components/ConversationSidebar.tsx
+Find where it renders the conversation list. If conversations.length === 0,
+show <EmptyState variant="no-conversations" /> instead of an empty list.
+
+Add this import at the top of ConversationSidebar.tsx:
+  import { EmptyState } from "./EmptyState";
+
+Then find where it maps over conversations and add a guard:
+
+──────── ADD GUARD before the conversations list ─────────────────────────────
+
+  {conversations.length === 0 && !isLoading && (
+    <EmptyState variant="no-conversations" />
+  )}
+
+──────────────────────────────────────────────────────────────────────────────
+
+FOR SEARCH RESULTS: If you have a search/user-lookup box in NewChatDialog.tsx
+or elsewhere, show <EmptyState variant="no-results" searchTerm={searchText} />
+when the search returns an empty array.
+
+──────────────────────────────────────────────────────────────────────────────
+
+ALSO BUILD: A ConnectionBanner if one does not already exist.
+Check  src/components/shared/ConnectionBanner.tsx  — if it is empty or missing
+the reconnecting state, REPLACE it with:
+
+──────── REPLACE  src/components/shared/ConnectionBanner.tsx  with this  ─────
+
+import { useConnectionStore } from "../../store/connectionStore";
+import { Wifi, WifiOff, RefreshCw } from "lucide-react";
+
+// ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
+//
+// Shows a banner at the top of the page when the socket is disconnected or
+// reconnecting. Disappears automatically when the connection is restored.
+//
+// States:
+//   reconnecting → yellow banner with spinning icon: "Reconnecting…"
+//   disconnected → red banner: "You are offline. Messages are queued."
+//   error        → red banner: "Connection failed."
+//
+// HOW TO USE:
+//   Place <ConnectionBanner /> somewhere near the top of ChatShell.tsx.
+//   It renders nothing when the connection is fine.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function ConnectionBanner() {
+  const status = useConnectionStore((s) => s.status);
+
+  if (status === "connected") return null;  // all good — show nothing
+
+  const isReconnecting = status === "reconnecting";
+  const isError        = status === "error";
+
+  return (
+    <div
+      role="alert"
+      aria-live="assertive"
+      className={`flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium
+                  text-center select-none ${
+        isReconnecting
+          ? "bg-yellow-500/10 text-yellow-700 dark:text-yellow-300"
+          : "bg-destructive/10 text-destructive"
+      }`}
+    >
+      {isReconnecting ? (
+        <>
+          <RefreshCw size={12} className="animate-spin" />
+          Reconnecting…
+        </>
+      ) : isError ? (
+        <>
+          <WifiOff size={12} />
+          Connection failed. Please refresh the page.
+        </>
+      ) : (
+        <>
+          <WifiOff size={12} />
+          You are offline — messages will be sent when you reconnect.
+        </>
+      )}
+    </div>
+  );
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN (test each state manually):
+
+  LOADING: Open the app for the first time → conversation list shows skeleton
+           rows, not a blank screen.
+
+  EMPTY:   Create a new account with no conversations → the list shows the
+           "No conversations yet" illustration, not a blank area.
+
+  NO RESULTS: In the new chat dialog, search for "zzzzz" → "No results found"
+              with the search term shown, not a blank dropdown.
+
+  ERROR:   Temporarily stop your backend server (Ctrl+C), then reload the page.
+           The ConnectionBanner appears at the top of the screen in yellow/red.
+           Restart the backend → it reconnects and the banner disappears.
+
+================================================================================
+
+STEP 24.6 — ACCESSIBILITY AND KEYBOARD
+================================================================================
+
+WHAT WE ARE BUILDING:
+  Making the app usable with ONLY a keyboard — no mouse.
+  Also making it friendly to screen readers (software blind users use to hear
+  the content of websites).
+
+  RULES TO FOLLOW:
+    1. Every clickable thing must be reachable with Tab key.
+    2. Every clickable thing must show a visible outline when focused.
+    3. Icon-only buttons must have aria-label so screen readers know what they do.
+    4. Images must have alt text.
+    5. The message list must announce new messages to screen readers.
+    6. Colour contrast must be sufficient (your design system already handles this
+       if you used the CSS variables — do not use hardcoded colours like #aaa).
+
+WHAT ALREADY WORKS:
+  Looking at your existing code:
+    - Composer.tsx already has aria-label on the attach and send buttons ✓
+    - MessageBubble.tsx already has aria-label on StatusTick (after our edits) ✓
+    - ChatHeader.tsx already has aria-label on the back button ✓
+    - MessageList.tsx already has aria-live="polite" (after our edits) ✓
+
+WHAT NEEDS TO BE CHECKED AND FIXED:
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Add a global focus ring style to  src/index.css
+─────────────────────────────────────────────────────────────────────────────
+
+Open  src/index.css  (the global stylesheet).
+Find the @layer base section.
+ADD this inside it, after the body rules:
+
+──────── ADD to @layer base in src/index.css  ────────────────────────────────
+
+  /* ── Keyboard focus ring ─────────────────────────────────────────────────
+     By default, browsers show an outline on focused elements.
+     Tailwind removes this with its `outline-none` class in many places.
+     We bring it back for KEYBOARD navigation only (not mouse clicks).
+     The :focus-visible pseudo-class handles this automatically:
+       - Keyboard focus  → shows outline
+       - Mouse click     → does NOT show outline
+  ─────────────────────────────────────────────────────────────────────────── */
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+──────────────────────────────────────────────────────────────────────────────
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Check every icon-only button in your components.
+        Any button that shows only an icon (no visible text) MUST have
+        an aria-label attribute.
+─────────────────────────────────────────────────────────────────────────────
+
+Go through these files and verify the aria-label is present:
+
+  src/components/chat/Composer.tsx:
+    Attach button     → aria-label="Attach a file"          (already present ✓)
+    Send button       → aria-label="Send message"           (already present ✓)
+    Remove file btn   → aria-label="Remove attachment"      (already present ✓)
+
+  src/components/chat/ChatHeader.tsx:
+    Back button       → aria-label="Back to conversations"  (already present ✓)
+    Members button    → aria-label="Show members"           (already present ✓)
+
+  src/components/ConversationSidebar.tsx:
+    New chat button   → ADD aria-label="New conversation"   if missing
+
+  src/components/NewChatDialog.tsx:
+    Close button      → ADD aria-label="Close dialog"       if missing
+
+For any button that is MISSING an aria-label, add it like this:
+  <button aria-label="Description of what this button does" ...>
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Make images have alt text.
+─────────────────────────────────────────────────────────────────────────────
+
+Go through your components and find every <img> tag.
+They must all have an alt attribute.
+
+  - User avatars → alt={user.username}       (already in most places ✓)
+  - Group icons  → alt={conversation.name}   (already in most places ✓)
+  - Message image attachments → alt="attachment"  (already in MessageBubble ✓)
+
+If any <img> is purely decorative and should be ignored by screen readers, use:
+  <img alt="" role="presentation" src={...} />
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Test keyboard navigation manually.
+─────────────────────────────────────────────────────────────────────────────
+
+Here is how to test that you can send a message using ONLY the keyboard:
+
+  Step 1: Open the app and log in.
+  Step 2: Press Tab repeatedly. You should see a visible blue/dark ring moving
+          from element to element. It must NEVER get stuck somewhere invisible.
+  Step 3: Tab to the conversation list. Press Enter to open a conversation.
+  Step 4: Tab to the message composer textarea. Start typing.
+  Step 5: Press Enter to send the message.
+  Step 6: The message appears in the list.
+
+  If step 2 fails: check that :focus-visible CSS is added (Action above).
+  If Tab gets stuck invisibly: look for elements with tabIndex="-1" that
+  shouldn't have it, or elements with outline:none without a :focus-visible
+  replacement.
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • You can navigate the entire app using only Tab, Enter, Space and arrow keys.
+   • Every focused element has a visible ring around it.
+   • Colour contrast is passing (use Chrome DevTools → Accessibility panel to check).
+   • Running a screen reader (e.g. NVDA on Windows or VoiceOver on Mac) and pressing
+     Tab reads out the purpose of every button correctly.
+
+================================================================================
+
+STEP 24.7 — RESPONSIVENESS AND FINAL LOOK
+================================================================================
+
+WHAT WE ARE BUILDING:
+  Making the app look good on:
+    - Desktop: 1200px+ wide (the full sidebar + chat layout)
+    - Tablet:  768px - 1199px (sidebar might be smaller)
+    - Phone:   below 768px (sidebar hidden, full-screen conversation)
+
+  Also handling edge cases in messages:
+    - Very long single words (like a URL with no spaces) — should wrap, not overflow
+    - Very long messages (hundreds of characters) — should stay within the bubble
+    - Messages that are only emoji ("😂😂😂") — should look clean and large
+    - Right-to-left text (Arabic, Hebrew) — the bubble should align correctly
+
+WHAT ALREADY WORKS:
+  Your ChatShell.tsx likely already has a responsive layout with a sidebar
+  and a main chat area. The ChatHeader has an onBack handler for mobile.
+  The Composer already disables the upload button when offline.
+
+WHAT NEEDS TO BE CHECKED AND FIXED:
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Check the message bubble for long words overflow.
+─────────────────────────────────────────────────────────────────────────────
+
+In MessageBubble.tsx, find the message text paragraph:
+  <p className="whitespace-pre-wrap break-words">
+
+CHANGE it to:
+  <p className="whitespace-pre-wrap break-words break-all">
+
+The `break-all` class forces very long words (like URLs) to wrap instead of
+overflowing the bubble. We already added this in Step 24.2 above — just verify it.
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Check the ChatShell for responsive layout.
+─────────────────────────────────────────────────────────────────────────────
+
+Open  src/layouts/ChatShell.tsx
+It should have a layout that looks like this at a high level:
+
+──────── VERIFY ChatShell.tsx follows this structure  ────────────────────────
+
+  <div className="flex h-screen overflow-hidden bg-background">
+
+    {/* Sidebar — full width on mobile, fixed width on desktop */}
+    <aside className="
+      w-full md:w-80 lg:w-96
+      flex-shrink-0
+      border-r border-border
+      overflow-hidden
+      flex flex-col
+      ...
+    ">
+      {/* ConversationSidebar goes here */}
+    </aside>
+
+    {/* Main chat area — hidden on mobile when sidebar is shown */}
+    <main className="
+      flex-1
+      overflow-hidden
+      flex flex-col
+      ...
+    ">
+      {/* ChatArea goes here (shows EmptyState when no conversation selected) */}
+    </main>
+
+  </div>
+
+──────────────────────────────────────────────────────────────────────────────
+
+MOBILE BEHAVIOUR:
+  On a phone screen (< md breakpoint = 768px), the user should see EITHER the
+  sidebar OR the conversation — never both at the same time.
+
+  If your ChatShell does not yet do this, here is the pattern to add:
+
+  When NO conversation is open (at /):   show sidebar, hide chat area.
+  When a conversation IS open (at /c/:id): hide sidebar, show chat area.
+
+  You can detect this with useParams in ChatShell:
+    const { conversationId } = useParams<{ conversationId?: string }>();
+    const hasConversation = !!conversationId;
+
+  Then use conditional classes:
+    <aside className={`... ${hasConversation ? "hidden md:flex" : "flex"}`}>
+    <main className={`... ${hasConversation ? "flex" : "hidden md:flex"}`}>
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Test at all three widths.
+─────────────────────────────────────────────────────────────────────────────
+
+In Chrome / Firefox, press F12 to open DevTools.
+Click the "Toggle Device Toolbar" button (phone icon, usually top-left of DevTools).
+
+Test these sizes:
+  375px  → iPhone SE (mobile)   → sidebar fills screen, tap conversation → chat fills screen
+  768px  → iPad (tablet)        → sidebar + chat side by side, smaller proportions
+  1280px → Desktop              → full layout as designed
+
+LOOK FOR:
+  - Anything overflowing its container (horizontal scrollbar appearing = BAD)
+  - Text that is cut off
+  - Buttons that are too small to tap (minimum 44×44px on mobile)
+  - The composer input that is usable on mobile (no zoom-in when tapping on iOS)
+
+  NOTE: To prevent iOS from zooming into the textarea when the user taps it,
+  the textarea's font-size must be at least 16px. Check Composer.tsx:
+  The class `text-sm` in Tailwind is 14px — on iOS this causes zoom.
+  Change the textarea's text class to `text-base` (16px) on mobile:
+    className="... text-sm md:text-sm"
+  OR just leave it as text-sm and add this to your global CSS:
+    @media (max-width: 767px) { textarea { font-size: 16px !important; } }
+
+─────────────────────────────────────────────────────────────────────────────
+ACTION: Add the mobile font-size fix to src/index.css
+─────────────────────────────────────────────────────────────────────────────
+
+Open  src/index.css
+ADD this at the end (after all the @layer blocks):
+
+──────── ADD at the end of  src/index.css  ───────────────────────────────────
+
+/* ── Mobile: prevent iOS from zooming into inputs ────────────────────────── */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+──────────────────────────────────────────────────────────────────────────────
+
+✅ DONE WHEN:
+   • On a 375px-wide screen: the conversation list fills the screen. Tapping a
+     conversation goes to the full-screen chat. A back button returns to the list.
+   • On a 1280px-wide screen: sidebar and chat are side by side.
+   • Send a message that is one very long word (like a URL) → it wraps inside
+     the bubble without overflowing.
+   • Send a message with only emoji → it looks clean.
+   • No horizontal scrollbar appears at any screen size.
+   • On a real phone: tapping the message input does NOT cause the page to zoom.
+
+================================================================================
+
+FINAL CHECKLIST — PART 24
+================================================================================
+
+Step 24.1 — Typing indicators:
+  [ ] useConversationSocket.ts created/updated with typing:update listener
+  [ ] ChatArea.tsx updated to use useConversationSocket hook
+  [ ] ChatHeader.tsx shows "Alice is typing…" (name, not just "typing…")
+  [ ] ConversationItem.tsx shows typing in sidebar (already existed)
+  [ ] TEST: Two users → tab A types → tab B shows "X is typing…"
+  [ ] TEST: Alice and Bob type simultaneously → "Alice and Bob are typing…"
+  [ ] TEST: 3+ people typing → "Several people are typing…"
+  [ ] TEST: After sending, indicator disappears immediately
+
+Step 24.2 — Read receipts on screen:
+  [ ] useReadReceipts.ts created in src/hooks/
+  [ ] MessageBubble.tsx updated with onVisible/onHidden props and data-message-id
+  [ ] MessageList.tsx updated to wire useReadReceipts and pass callbacks to bubbles
+  [ ] TEST: Send message → one grey ✓ (SENT)
+  [ ] TEST: Other tab is open → two grey ✓✓ (DELIVERED)
+  [ ] TEST: Other person sees it → two blue ✓✓ (READ)
+  [ ] TEST: Tab not focused → blue ticks only appear AFTER switching back
+
+Step 24.3 — Presence on screen:
+  [ ] time.ts updated with lastSeenText() function
+  [ ] ChatHeader.tsx uses lastSeenText() instead of formatDistanceToNow()
+  [ ] presence:fetch emitted on socket connect
+  [ ] presence:snapshot listener fills presenceStore
+  [ ] TEST: Close other tab → green dot disappears within 5 seconds
+  [ ] TEST: "last seen just now" → "last seen X minutes ago" over time
+
+Step 24.4 — Notifications:
+  [ ] useNotifications.ts created in src/hooks/
+  [ ] useNotifications() called in ChatShell.tsx
+  [ ] TEST: Tab not focused + new message → title changes to "(1) Chat App"
+  [ ] TEST: Switch back to tab → title returns to "Chat App"
+  [ ] TEST: Optional sound plays when tab not focused (if enabled)
+  [ ] TEST: Browser notification appears (if permission granted)
+
+Step 24.5 — Error, empty and loading states:
+  [ ] EmptyState.tsx has all 4 variants: no-conversations, no-messages,
+      no-results, error
+  [ ] ConversationSidebar shows EmptyState when conversations.length === 0
+  [ ] ConnectionBanner shows when socket is disconnected/reconnecting
+  [ ] ConnectionBanner disappears when reconnected
+  [ ] TEST: Stop backend → banner appears. Restart → banner disappears.
+  [ ] TEST: New account with zero conversations → empty state shown (not blank)
+
+Step 24.6 — Accessibility and keyboard:
+  [ ] :focus-visible CSS rule added to index.css
+  [ ] All icon-only buttons have aria-label
+  [ ] All <img> tags have alt attributes
+  [ ] MessageList has aria-live="polite" and role="log"
+  [ ] StatusTick has aria-label on each status
+  [ ] TEST: Navigate entire app with Tab key only — nothing invisible
+  [ ] TEST: Send a message using only keyboard (Tab to input → type → Enter)
+
+Step 24.7 — Responsiveness and final look:
+  [ ] MessageBubble has break-words break-all on message text
+  [ ] ChatShell shows sidebar OR chat on mobile (not both)
+  [ ] Mobile iOS textarea font-size fix added to index.css
+  [ ] TEST: 375px — sidebar full screen, tap to open chat, back arrow works
+  [ ] TEST: 1280px — sidebar + chat side by side
+  [ ] TEST: Long word message does not overflow bubble
+  [ ] TEST: Emoji-only message looks clean
+  [ ] TEST: No horizontal scroll at any screen width
+
+================================================================================
+
+FILE MAP — WHAT YOU CREATED OR CHANGED IN PART 24
+================================================================================
+
+  src/
+  ├── hooks/
+  │   ├── useConversationSocket.ts   ← CREATED: all socket listeners in one hook
+  │   ├── useReadReceipts.ts         ← CREATED: IntersectionObserver for read receipts
+  │   └── useNotifications.ts        ← CREATED: tab title + sound + browser notifications
+  │
+  ├── components/
+  │   ├── chat/
+  │   │   ├── MessageBubble.tsx      ← CHANGED: added onVisible/onHidden props,
+  │   │   │                                     better StatusTick aria-labels,
+  │   │   │                                     data-message-id attribute,
+  │   │   │                                     break-all for long words
+  │   │   ├── MessageList.tsx        ← CHANGED: uses useReadReceipts,
+  │   │   │                                     passes callbacks to MessageBubble,
+  │   │   │                                     aria-live + role="log"
+  │   │   └── ChatHeader.tsx         ← CHANGED: uses lastSeenText(),
+  │   │                                          shows full name in typing indicator
+  │   ├── shared/
+  │   │   └── ConnectionBanner.tsx   ← CHANGED: complete implementation
+  │   └── EmptyState.tsx             ← CHANGED: complete with all 4 variants
+  │
+  ├── pages/
+  │   └── ChatArea.tsx               ← CHANGED: uses useConversationSocket hook
+  │
+  ├── utils/
+  │   └── time.ts                    ← CHANGED: added lastSeenText()
+  │
+  └── index.css                      ← CHANGED: :focus-visible ring, mobile font-size fix
+
+================================================================================
+
+COMMON PROBLEMS AND FIXES
+================================================================================
+
+PROBLEM: Typing indicator shows but never clears.
+FIX:     The useConversationSocket cleanup runs setTyping(conversationId, []) on
+         unmount. Check that the return value of the useEffect is actually the
+         cleanup function. Also confirm the server's 5-second TTL fires —
+         typing:update with an empty typerIds should clear it.
+
+PROBLEM: Read receipts are sent even when the tab is in the background.
+FIX:     Check the document.hasFocus() guard in sendReadReceipt(). If it is
+         missing, add it. Also confirm you are listening to window "focus" to
+         trigger a re-check when the tab comes back.
+
+PROBLEM: The blue ticks (READ) never appear.
+FIX:     1. Open browser DevTools → Network → filter by WS (WebSocket).
+            You should see message:read events being emitted from your tab.
+         2. If you see them: check the server-side receipt handler.
+         3. If you don't see them: check that onVisible is being passed to
+            MessageBubble and that the IntersectionObserver is observing the
+            correct element (the one with data-message-id).
+
+PROBLEM: Tab title shows "(0) Chat App" even with no unread messages.
+FIX:     The title update checks totalUnread > 0. If it is showing 0, the
+         conversations in the store have unreadCount = 0 which is correct —
+         the title should be "Chat App" (no prefix). Check that the useEffect
+         dependency array includes totalUnread.
+
+PROBLEM: The ConnectionBanner never disappears.
+FIX:     Check that the useConnectionStore's status is being set to "connected"
+         when the socket connects. Open the socket connect event handler in
+         useSocketConnection.ts and add a log to verify it fires.
+
+PROBLEM: On mobile, text input zooms the page.
+FIX:     The font-size of the input must be at least 16px on iOS. Verify the
+         global CSS fix was added:
+           @media (max-width: 767px) { input, textarea { font-size: 16px !important; } }
+         Alternatively add text-base class directly on the textarea in Composer.tsx.
+
+PROBLEM: The sidebar and chat are both visible on mobile at the same time.
+FIX:     Open ChatShell.tsx. Use useParams to detect if a conversation is open.
+         Apply hidden md:flex to the sidebar when a conversation is open,
+         and hidden md:flex to the main area when no conversation is open.
+
+PROBLEM: Some buttons have no visible focus ring.
+FIX:     Check that the element does NOT have outline:none without a
+         :focus-visible replacement. The global :focus-visible rule we added
+         to index.css should handle most cases. If a specific component overrides
+         it with Tailwind's outline-none class, replace that class with
+         focus:outline-none focus-visible:ring-2 focus-visible:ring-ring.
+
+================================================================================
+END OF PART 24 GUIDE
+================================================================================

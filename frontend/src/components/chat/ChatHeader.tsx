@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { formatDistanceToNow } from "date-fns";
 import { ArrowLeft, Users } from "lucide-react";
+import { lastSeenText } from "../../utils/time";
 import { useAuthStore }     from "../../store/authStore";
 import { usePresenceStore } from "../../stores/presenceStore";
 import { useTypingStore }   from "../../stores/typingStore";
@@ -57,7 +57,21 @@ export function ChatHeader({ conversation, onBack }: ChatHeaderProps) {
     }
 
     // DM: Check typing first (highest priority).
-    if (typerIds.length > 0) return "typing…";
+    // Show the actual name(s) so the other person knows WHO is typing.
+    if (typerIds.length === 1) {
+      const name = conversation.participants.find((p) => p.id === typerIds[0])
+        ?.username ?? "Someone";
+      return `${name} is typing…`;
+    }
+    if (typerIds.length === 2) {
+      const names = typerIds.map(
+        (id) => conversation.participants.find((p) => p.id === id)?.username ?? "Someone",
+      );
+      return `${names[0]} and ${names[1]} are typing…`;
+    }
+    if (typerIds.length > 2) {
+      return "Several people are typing…";
+    }
 
     // Then check online/offline from presence store.
     const presence = otherPerson ? presenceMap.get(otherPerson.id) : undefined;
@@ -66,7 +80,7 @@ export function ChatHeader({ conversation, onBack }: ChatHeaderProps) {
     // Last resort: show when they were last seen.
     const lastSeen = presence?.lastSeen ?? otherPerson?.lastSeen;
     if (lastSeen) {
-      return `last seen ${formatDistanceToNow(new Date(lastSeen), { addSuffix: true })}`;
+      return `last seen ${lastSeenText(lastSeen)}`;
     }
 
     return "offline";
