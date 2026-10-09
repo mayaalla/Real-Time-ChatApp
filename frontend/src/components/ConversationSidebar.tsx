@@ -4,6 +4,11 @@ import { useConversationStore }      from "../store/conversationStore";
 import { fetchConversations }        from "../api/conversations.api";
 import { ConversationItem }          from "./ConversationItem";
 import { NewChatDialog }             from "./NewChatDialog";
+import { EmptyState }                from "./EmptyState";
+import { usePresenceStore } from "../stores/presenceStore";
+import { useTypingStore } from "../stores/typingStore";
+import { useLogout } from "../hooks/useLogout";
+import { LogOut } from "lucide-react";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
@@ -24,20 +29,26 @@ export function ConversationSidebar() {
   const token        = useAuthStore((s) => s.accessToken);
   const currentUser  = useAuthStore((s) => s.user);
   const { conversations, setAll } = useConversationStore();
+  const presenceMap = usePresenceStore((s) => s.presenceMap);
+  const typingMap = useTypingStore((s) => s.typingMap);
+  const { logout } = useLogout();
 
   const [searchQuery, setSearchQuery]   = useState("");
   const [showDialog,  setShowDialog]    = useState(false);
   const [loading,     setLoading]       = useState(true);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   // ── Fetch conversation list once on mount ─────────────────────────────────
   useEffect(() => {
     // Don't attempt the fetch until the session has been restored
     if (!token) return;
+    let cancelled = false;
 
     fetchConversations(token)
-      .then((list) => setAll(list as Parameters<typeof setAll>[0]))
+      .then((list) => { if (!cancelled) setAll(list); })
       .catch(console.error)
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [token, setAll]);
 
   // ── Guard: session not yet restored → render nothing ─────────────────────
@@ -68,6 +79,7 @@ export function ConversationSidebar() {
         <button
           onClick={() => setShowDialog(true)}
           title="New conversation"
+          aria-label="New conversation"
           style={{
             width:        "32px",
             height:       "32px",
@@ -109,16 +121,22 @@ export function ConversationSidebar() {
       </div>
 
       {/* ── Conversation list (scrollable) ───────────────────────────────────*/}
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
         {loading && (
           <p style={{ padding: "16px", color: "var(--muted-foreground)", fontSize: "0.875rem" }}>
             Loading…
           </p>
         )}
 
-        {!loading && filtered.length === 0 && (
+        {/* Empty state: no conversations at all (not searching) */}
+        {!loading && conversations.length === 0 && !searchQuery && (
+          <EmptyState variant="no-conversations" />
+        )}
+
+        {/* Empty state: search returned nothing */}
+        {!loading && searchQuery && filtered.length === 0 && (
           <p style={{ padding: "16px", color: "var(--muted-foreground)", fontSize: "0.875rem" }}>
-            {searchQuery ? "No conversations match your search." : "No conversations yet. Start one!"}
+            No conversations match your search.
           </p>
         )}
 
@@ -127,10 +145,12 @@ export function ConversationSidebar() {
             key={conv.id}
             conversation={conv}
             currentUserId={currentUser.id}
-            // isOnline and typingUsernames will be wired in Step 21.5C
-            // (from the socket/presence store). For now they default to false/[].
-            isOnline={false}
-            typingUsernames={[]}
+            isOnline={!conv.isGroup && conv.participants.some(
+              (p) => p.id !== currentUser.id && presenceMap.get(p.id)?.online,
+            )}
+            typingUsernames={conv.participants
+              .filter((p) => p.id !== currentUser.id && (typingMap.get(conv.id) ?? []).includes(p.id))
+              .map((p) => p.username)}
           />
         ))}
       </div>
@@ -170,9 +190,28 @@ export function ConversationSidebar() {
             {(currentUser.username?.[0] ?? "?").toUpperCase()}
           </div>
         )}
-        <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>
+        <span className="flex-1 min-w-0 truncate" style={{ fontWeight: 600, fontSize: "0.875rem" }}>
           {currentUser.username}
         </span>
+        <button
+          type="button"
+          onClick={async () => {
+            setIsLoggingOut(true);
+            try {
+              await logout();
+            } finally {
+              setIsLoggingOut(false);
+            }
+          }}
+          disabled={isLoggingOut}
+          aria-label="Log out"
+          className="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1.5 text-sm
+                     text-muted-foreground hover:bg-secondary hover:text-foreground
+                     transition-colors disabled:opacity-50 disabled:cursor-wait"
+        >
+          <LogOut size={16} aria-hidden="true" />
+          {isLoggingOut ? "Logging out…" : "Log out"}
+        </button>
       </div>
 
       {/* ── New chat dialog (portal-style overlay) ──────────────────────────*/}

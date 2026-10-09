@@ -1,6 +1,9 @@
 import { Outlet, useParams } from "react-router-dom";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { ConnectionBanner } from "../components/shared/ConnectionBanner";
+import { useNotifications } from "../hooks/useNotifications";
+import { useConversationSocket } from "../hooks/useConversationSocket";
+import { socket } from "../lib/socket";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
@@ -18,6 +21,10 @@ import { ConnectionBanner } from "../components/shared/ConnectionBanner";
 export function ChatShell() {
   // useParams reads the :conversationId from the URL (if present)
   const { conversationId } = useParams<{ conversationId?: string }>();
+
+  // Tab title + sound + browser notifications for new messages.
+  useNotifications();
+  useConversationSocket(socket);
 
   // On mobile: if a conversation is open, hide the sidebar and show the chat.
   // On desktop: always show both panels.

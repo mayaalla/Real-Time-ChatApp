@@ -1,6 +1,8 @@
-import { useEffect }            from "react";
+import { useEffect, useRef }    from "react";
+import type { Socket } from "socket.io-client";
 import { useParams }            from "react-router-dom";
 import { useConversationStore } from "../store/conversationStore";
+import { useAuthStore } from "../store/authStore";
 
 // ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
 //
@@ -17,10 +19,11 @@ import { useConversationStore } from "../store/conversationStore";
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useConversationSocket(socket: any | null) {
+export function useConversationSocket(socket: Socket | null) {
   const { conversationId: activeConversationId } = useParams<{ conversationId?: string }>();
-  const { bumpConversation, setUnreadCount, addOrUpdate } = useConversationStore();
+  const { bumpConversation, setUnreadCount } = useConversationStore();
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  const seenMessageIds = useRef(new Set<string>());
 
   useEffect(() => {
     if (!socket) return;
@@ -29,6 +32,7 @@ export function useConversationSocket(socket: any | null) {
     // Payload: { message: { id, conversationId, senderId, textBody, attachments, createdAt } }
     const onMessageNew = (payload: {
       message: {
+        id: string;
         conversationId: string;
         senderId:       string;
         textBody:       string | null;
@@ -37,17 +41,24 @@ export function useConversationSocket(socket: any | null) {
       };
     }) => {
       const { message } = payload;
-      const isCurrentlyOpen = message.conversationId === activeConversationId;
+      if (seenMessageIds.current.has(message.id)) return;
+      seenMessageIds.current.add(message.id);
+      if (seenMessageIds.current.size > 1000) {
+        const oldestId = seenMessageIds.current.values().next().value;
+        if (oldestId) seenMessageIds.current.delete(oldestId);
+      }
+      const isCurrentlyOpen = message.conversationId === activeConversationId && document.hasFocus();
 
       bumpConversation(
         message.conversationId,
         {
+          id: message.id,
           textBody:  message.textBody,
           senderId:  message.senderId,
           createdAt: message.createdAt,
           deletedAt: message.deletedAt ?? null,
         },
-        !isCurrentlyOpen,   // increment unread only if the chat is not open
+        !isCurrentlyOpen && message.senderId !== currentUserId,
       );
     };
 
@@ -77,5 +88,5 @@ export function useConversationSocket(socket: any | null) {
       socket.off("conversation:unread_count", onUnreadCount);
       socket.off("conversation:created",     onConversationCreated);
     };
-  }, [socket, activeConversationId, bumpConversation, setUnreadCount, addOrUpdate]);
+  }, [socket, activeConversationId, currentUserId, bumpConversation, setUnreadCount]);
 }

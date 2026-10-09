@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useAuthStore }       from "./store/authStore";
 import { useSessionRestore }  from "./hooks/useSessionRestore";
-import { useLogout }          from "./hooks/useLogout";
 import { LoadingScreen }      from "./components/LoadingScreen";
 import { PrivateRoute }       from "./components/PrivateRoute";
 import { PublicOnlyRoute }    from "./components/PublicOnlyRoute";
@@ -10,7 +9,6 @@ import { EmptyState }         from "./components/EmptyState";
 import { ChatArea }           from "./pages/ChatArea";
 import { LoginPage }          from "./pages/LoginPage";
 import { RegisterPage }       from "./pages/RegisterPage";
-import { NotFoundPage }       from "./pages/NotFoundPage";
 
 import { useSocketConnection } from "./hooks/useSocketConnection";
 import { useSocketEvents }     from "./hooks/useSocketEvents";
@@ -49,7 +47,7 @@ function AppInner() {
       {/* If you are NOT logged in, these redirect you to /login.           */}
       <Route element={<PrivateRoute />}>
         <Route element={<ChatShell />}>
-          <Route path="/"       element={<EmptyState />} />
+          <Route path="/"       element={<EmptyState variant="no-conversations" />} />
           <Route path="/c/:conversationId" element={<ChatArea />} />
         </Route>
         {/* Add more private routes here as you build them */}

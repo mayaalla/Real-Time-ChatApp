@@ -2,6 +2,11 @@ import { useNavigate }    from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore }   from "../store/authStore";
 import { logoutUser }     from "../api/auth.api";
+import { socket } from "../lib/socket";
+import { useConversationStore } from "../store/conversationStore";
+import { usePresenceStore } from "../stores/presenceStore";
+import { useTypingStore } from "../stores/typingStore";
+import { useDraftStore } from "../stores/draftStore";
 
 // ─── WHAT THIS HOOK DOES ──────────────────────────────────────────────────────
 //
@@ -38,16 +43,15 @@ export function useLogout() {
     // This is critical. Without it, the next user might briefly see
     // the previous user's conversations.
     queryClient.clear();
+    useConversationStore.getState().setAll([]);
+    usePresenceStore.getState().setPresenceMap(new Map());
+    useTypingStore.setState({ typingMap: new Map() });
+    useDraftStore.setState({ drafts: new Map() });
 
     // ── Step 5: Disconnect the socket ────────────────────────────────────────
-    // NOTE: This line assumes you have a socket module that exports
-    //       the socket instance. Adjust the import path to match your project.
-    //
-    //   import { socket } from "../socket/socket";
-    //   socket.disconnect();
-    //
-    // If you haven't built the socket module yet, add this line in
-    // the next part when you wire up the socket connection.
+    socket.disconnect();
+    socket.sendBuffer = [];
+    socket.auth = { token: "" };
 
     // ── Step 6: Go to the login page ─────────────────────────────────────────
     navigate("/login", { replace: true });

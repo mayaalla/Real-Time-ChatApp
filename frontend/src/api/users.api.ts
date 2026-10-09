@@ -1,4 +1,4 @@
-const API = import.meta.env.VITE_API_URL as string;
+import { api } from "../lib/axios";
 
 // ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
 //
@@ -20,20 +20,15 @@ export interface PublicUser {
 // Returns an empty array if the search is too short or returns nothing.
 export async function searchUsers(
   text:  string,
-  token: string,
+  _token: string,
+  signal?: AbortSignal,
 ): Promise<PublicUser[]> {
   if (text.trim().length < 2) return [];
 
-  const res = await fetch(
-    `${API}/api/users?search=${encodeURIComponent(text.trim())}`,
-    {
-      headers:     { Authorization: `Bearer ${token}` },
-      credentials: "include",
-    },
+  // Use the shared client so expired access tokens are refreshed automatically.
+  const { data } = await api.get<{ ok: boolean; data: { users: PublicUser[] } }>(
+    "/api/users",
+    { params: { search: text.trim() }, signal },
   );
-
-  if (!res.ok) return [];
-
-  const json = await res.json();
-  return (json.data ?? []) as PublicUser[];
+  return data.data.users;
 }

@@ -1,4 +1,30 @@
+import type { ConversationSummary } from "../store/conversationStore";
+
 const API = import.meta.env.VITE_API_URL as string;
+
+interface RawConversation extends Omit<ConversationSummary, "participants"> {
+  participants: Array<{
+    id: string; // Membership ID, distinct from the user's ID.
+    user: {
+      id: string;
+      username: string;
+      avatarAddress: string | null;
+      lastSeen: string | null;
+    };
+  }>;
+}
+
+export function normaliseConversation(raw: RawConversation): ConversationSummary {
+  return {
+    ...raw,
+    participants: raw.participants.map(({ user }) => ({
+      id: user.id,
+      username: user.username,
+      avatarAddress: user.avatarAddress,
+      lastSeen: user.lastSeen,
+    })),
+  };
+}
 
 // ─── WHAT THIS FILE DOES ──────────────────────────────────────────────────────
 //
@@ -9,14 +35,15 @@ const API = import.meta.env.VITE_API_URL as string;
 // ─── fetchConversations ────────────────────────────────────────────────────────
 // Calls GET /api/conversations
 // Returns the full conversation list for the logged-in user.
-export async function fetchConversations(token: string): Promise<unknown[]> {
+export async function fetchConversations(token: string): Promise<ConversationSummary[]> {
   const res = await fetch(`${API}/api/conversations`, {
     headers:     { Authorization: `Bearer ${token}` },
     credentials: "include",
   });
   if (!res.ok) throw new Error("Could not load conversations");
   const json = await res.json();
-  return json.data?.conversations ?? [];
+  const conversations: RawConversation[] = json.data?.conversations ?? [];
+  return conversations.map(normaliseConversation);
 }
 
 // ─── createConversation ───────────────────────────────────────────────────────
@@ -42,6 +69,6 @@ export async function createConversation(
   });
 
   const json = await res.json();
-  if (!json.ok) throw new Error(json.message ?? "Could not create conversation");
-  return json.data;
+  if (!res.ok || !json.ok) throw new Error(json.message ?? "Could not create conversation");
+  return json.data.conversation;
 }

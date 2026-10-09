@@ -3,7 +3,8 @@ import { useNavigate }         from "react-router-dom";
 import { useAuthStore }        from "../store/authStore";
 import { useDebounce }         from "../hooks/useDebounce";
 import { searchUsers }         from "../api/users.api";
-import { createConversation }  from "../api/conversations.api";
+import { createConversation, fetchConversations } from "../api/conversations.api";
+import { useConversationStore } from "../store/conversationStore";
 import type { PublicUser }     from "../api/users.api";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
@@ -29,38 +30,47 @@ export function NewChatDialog({ onClose }: Props) {
   const navigate    = useNavigate();
   const token       = useAuthStore((s) => s.accessToken)!;
   const currentUser = useAuthStore((s) => s.user)!;
+  const setConversations = useConversationStore((s) => s.setAll);
 
   // ── State ────────────────────────────────────────────────────────────────────
   const [query,     setQuery]     = useState("");                   // raw input
-  const [results,   setResults]   = useState<PublicUser[]>([]);     // search results
+  const [searchResult, setSearchResult] = useState<{
+    query: string;
+    users: PublicUser[];
+    error: string | null;
+  }>({ query: "", users: [], error: null });
   const [selected,  setSelected]  = useState<PublicUser[]>([]);     // chosen people
   const [groupName, setGroupName] = useState("");                   // group chat name
   const [busy,      setBusy]      = useState(false);                // creating conversation
   const [error,     setError]     = useState<string | null>(null);
 
   // Debounced query — only fires the search 400ms after typing stops
-  const debouncedQuery = useDebounce(query, 400);
+  const searchText = query.trim();
+  const debouncedQuery = useDebounce(searchText, 400);
+  const isSearching = searchText.length >= 2 && (
+    searchText !== debouncedQuery || searchResult.query !== debouncedQuery
+  );
+  const searchError = !isSearching && searchText.length >= 2 ? searchResult.error : null;
+  const results = isSearching || searchText.length < 2 || searchError ? [] :
+    searchResult.users.filter((u) => u.id !== currentUser.id && !selected.some((s) => s.id === u.id));
 
   // ── Search effect ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (debouncedQuery.trim().length < 2) {
-      setResults([]);
-      return;
-    }
+    if (debouncedQuery.length < 2) return;
     // Call the API. Ignore results if the component unmounts before they arrive.
     let cancelled = false;
-    searchUsers(debouncedQuery, token).then((users) => {
+    const controller = new AbortController();
+    searchUsers(debouncedQuery, token, controller.signal).then((users) => {
       if (!cancelled) {
-        // Filter out the current user and already-selected users from results
-        setResults(
-          users.filter(
-            (u) => u.id !== currentUser.id && !selected.find((s) => s.id === u.id)
-          )
-        );
+        setSearchResult({ query: debouncedQuery, users, error: null });
       }
+    }).catch(() => {
+      if (!cancelled) setSearchResult({
+        query: debouncedQuery, users: [], error: "Could not search contacts. Please try again.",
+      });
     });
-    return () => { cancelled = true; };
-  }, [debouncedQuery, token, currentUser.id, selected]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [debouncedQuery, token]);
 
   // ── Add / remove from selection ───────────────────────────────────────────────
   const toggleSelect = (user: PublicUser) => {
@@ -89,6 +99,9 @@ export function NewChatDialog({ onClose }: Props) {
         isGroup,
         isGroup ? groupName.trim() : undefined,
       );
+      // Load the new chat into the sidebar store before navigating to it.
+      const conversations = await fetchConversations(token);
+      setConversations(conversations);
       onClose();
       navigate(`/c/${conversation.id}`);
     } catch (err: unknown) {
@@ -196,6 +209,10 @@ export function NewChatDialog({ onClose }: Props) {
 
         {/* Search results */}
         <div style={{ overflowY: "auto", flex: 1 }}>
+          <p role="status" style={{ color: searchError ? "var(--destructive)" : "var(--muted-foreground)", fontSize: "0.875rem" }}>
+            {searchText.length < 2 ? "Type at least 2 characters to search." :
+              isSearching ? "Searching…" : searchError ?? (results.length === 0 ? "No matching contacts." : "")}
+          </p>
           {results.map((user) => (
             <button
               key={user.id}
