@@ -1,5 +1,50 @@
 @import "tailwindcss";
 
+.brand-logo {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.65rem;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.brand-logo__name {
+  color: var(--foreground);
+  font-family: "Syne", "Arial Black", sans-serif;
+  font-size: 2.75rem;
+  font-weight: 800;
+  letter-spacing: -0.08em;
+}
+
+.brand-logo__dot {
+  color: #7856c7;
+}
+
+.brand-logo__arabic {
+  color: var(--muted-foreground);
+  font-family: "Reem Kufi", Tahoma, sans-serif;
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.brand-logo--compact {
+  gap: 0.45rem;
+}
+
+.brand-logo--compact .brand-logo__name {
+  font-size: 1.65rem;
+}
+
+.brand-logo--compact .brand-logo__arabic {
+  font-size: 0.9rem;
+}
+
+.dark .brand-logo__dot {
+  color: #bd9cff;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {

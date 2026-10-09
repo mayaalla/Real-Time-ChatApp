@@ -5,6 +5,7 @@ import { fetchConversations }        from "../api/conversations.api";
 import { ConversationItem }          from "./ConversationItem";
 import { NewChatDialog }             from "./NewChatDialog";
 import { EmptyState }                from "./EmptyState";
+import { BrandLogo }                 from "./BrandLogo";
 import { usePresenceStore } from "../stores/presenceStore";
 import { useTypingStore } from "../stores/typingStore";
 import { useLogout } from "../hooks/useLogout";
@@ -75,7 +76,7 @@ export function ConversationSidebar() {
           flexShrink:     0,
         }}
       >
-        <span style={{ fontWeight: 700, fontSize: "1.125rem" }}>Messages</span>
+        <BrandLogo compact />
         <button
           onClick={() => setShowDialog(true)}
           title="New conversation"

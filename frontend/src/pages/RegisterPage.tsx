@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useNavigate, Link }        from "react-router-dom";
 import { registerUser }             from "../api/auth.api";
 import { useAuthStore }             from "../store/authStore";
+import { BrandLogo }                from "../components/BrandLogo";
 
 // ─── WHAT THIS COMPONENT DOES ─────────────────────────────────────────────────
 //
@@ -95,6 +96,9 @@ export function RegisterPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
       <div className="w-full max-w-sm">
+        <div className="mb-8 text-center">
+          <BrandLogo />
+        </div>
 
         {/* Card */}
         <div className="rounded-[var(--radius)] border border-border bg-card shadow-md p-8 space-y-6">
