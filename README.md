@@ -22,6 +22,13 @@ Hadra is a browser-based chat app for one-to-one and group conversations. It let
 - **Authentication:** Short-lived access tokens and refresh tokens in HTTP-only cookies keep sessions active.
 - **Attachments:** The API issues signed upload details so files can upload directly to Cloudinary.
 
+### Engineering decisions
+
+- I load older messages using a cursor, so new messages do not shift the next batch of history.
+- I mark deleted messages instead of removing their rows. This keeps chat order and read receipts intact.
+- I check conversation membership before someone reads messages or joins a live chat room.
+- I store refresh tokens in PostgreSQL so I can revoke a session when someone logs out.
+
 ## Engineering highlight
 
 **Challenge:** A connection can drop after a message reaches the server but before the sender receives confirmation. Retrying with a new ID would create a duplicate.
