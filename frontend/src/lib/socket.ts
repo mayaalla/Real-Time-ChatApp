@@ -1,5 +1,5 @@
 import { io, Socket } from "socket.io-client";
-const SOCKET_URL = import.meta.env.VITE_API_URL as string;
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL as string;
 
 export const socket: Socket = io(SOCKET_URL, {
   // Do not connect automatically on import.

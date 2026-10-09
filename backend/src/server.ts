@@ -16,7 +16,7 @@ await connectRedis();
 
 const INSTANCE = process.env.INSTANCE_NAME ?? "instance-1";
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`[${INSTANCE}] chat-server listening on http://localhost:${PORT} [${ENV}]`);
 });
 

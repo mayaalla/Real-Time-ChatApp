@@ -15,7 +15,7 @@
 // ─────────────────────────────────────────────────────────────
 // 📦 IMPORTS — Loading the tools we need before we start cooking
 // ─────────────────────────────────────────────────────────────
-
+import { env } from "./config/env.js";
 // ✅ EXPRESS — The main web framework. Like the skeleton of our server.
 //    It handles incoming HTTP requests (GET, POST, etc.) and sends responses.
 //    ADHD Example: Think of Express like a restaurant host — it receives
@@ -95,7 +95,9 @@ export function createApp(): Application {
 
   // 🚀 Create the Express app — this is our actual server instance
   const app = express();
-
+  if (env.NODE_ENV === "production") {
+    app.set("trust proxy", 1);
+  }
 
   // ───────────────────────────────────────────────────────────
   // 🛡️ MIDDLEWARE SETUP
@@ -134,7 +136,10 @@ export function createApp(): Application {
   // `credentials: true` allows cookies to be sent along with requests.
   // ADHD Note: If you change the frontend port, UPDATE the origin here too!
   //            Otherwise the browser will silently block all requests. 😤
-  app.use(cors({ origin: "http://localhost:5173", credentials: true }));
+  app.use(cors({
+    origin: env.CORS_ORIGIN,
+    credentials: true,
+  }));
 
 
   // ✅ JSON BODY PARSER (with size limit)
