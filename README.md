@@ -86,10 +86,6 @@ Open [http://localhost:5173](http://localhost:5173). Register two accounts in se
 
 From `backend/`, run `npx vitest run` for the backend tests and `npm run typecheck` for TypeScript checking. From `frontend/`, run `npm run build` to check the frontend and produce a production build. The current backend suite covers conversation access, message edits and deletion, receipts, typing, and client message cache behavior. **All 32 tests, backend type checking, and the frontend build passed** during this README update.
 
-## Limitations and next steps
-
-No public deployment is linked here. Attachment uploads require your own Cloudinary credentials, and the current automated tests do not include an end-to-end browser flow. A deployed demo and browser-level tests are the next useful additions.
-
 ## Contact
 
 [mayaalla on GitHub](https://github.com/mayaalla)
